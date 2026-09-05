@@ -13,7 +13,7 @@ from loaders.ocx_quota import QuotaSource
 from menubar.quota_sources import SourceMode
 from prefs import _load_preferences, _save_preferences
 
-DEFAULT_QUOTA_CARD_ORDER = ("claude", "codex", "agy", "grok")
+DEFAULT_QUOTA_CARD_ORDER = ("claude", "codex", "agy", "grok", "openrouter")
 DEFAULT_PANEL_FLAVOR = "mocha"
 PANEL_FLAVORS = ("latte", "frappe", "macchiato", "mocha")
 DUAL_SOURCE_PROVIDERS = ("claude", "codex", "antigravity", "grok")
@@ -47,6 +47,11 @@ def _hide_agy_enabled(prefs: Mapping[str, object] | None = None) -> bool:
 def _hide_grok_enabled(prefs: Mapping[str, object] | None = None) -> bool:
     data = _resolved_preferences(prefs)
     return data.get("hide_grok_section") is True
+
+
+def _hide_openrouter_enabled(prefs: Mapping[str, object] | None = None) -> bool:
+    data = _resolved_preferences(prefs)
+    return data.get("hide_openrouter_section") is True
 
 
 def _panel_flavor(prefs: Mapping[str, object] | None = None) -> str:
@@ -171,6 +176,15 @@ def _save_quota_last_source(provider: object, source: object) -> bool:
 def _prefer_ocx_enabled(prefs: Mapping[str, object] | None = None) -> bool:
     data = _resolved_preferences(prefs)
     return data.get("prefer_ocx") is True
+
+
+def _save_prefer_ocx(enabled: object) -> bool:
+    if not isinstance(enabled, bool):
+        return False
+    preferences = _load_preferences()
+    preferences["prefer_ocx"] = enabled
+    _save_preferences(preferences)
+    return True
 
 
 def _valid_choice_mapping(value: object, choices: tuple[str, ...]) -> dict[str, str]:

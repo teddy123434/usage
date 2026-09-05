@@ -8,6 +8,8 @@ from pathlib import Path
 
 from loaders.ocx_quota import KeyBudgetUsd, NormalizedQuotaSnapshot, parse_ocx_quota_payload
 from menubar import openrouter
+from menubar import state as menubar_state
+from menubar import title as menubar_title
 
 
 def _snapshot() -> NormalizedQuotaSnapshot:
@@ -131,3 +133,73 @@ def test_project_openrouter_uses_reset_timestamp_before_expiry() -> None:
     assert state is not None
     assert state.reset_at == reset_at
     assert state.reset_text == "Resets in 1d 0h"
+
+
+def _title_state(openrouter_state: menubar_state.OpenRouterState) -> menubar_state.PopoverState:
+    state = menubar_state._empty_state("en")
+    state.hide_claude = True
+    state.hide_codex = True
+    state.hide_agy = True
+    state.hide_grok = True
+    state.hide_openrouter = False
+    state.openrouter = openrouter_state
+    state.card_order = ("openrouter", "claude", "codex", "agy", "grok")
+    return state
+
+
+def test_openrouter_title_prefers_account_and_preserves_valid_zero() -> None:
+    state = _title_state(
+        menubar_state.OpenRouterState(
+            headline="$0.00",
+            account_remaining="$0.00",
+            account_total="$25.00",
+            account_used="$25.00",
+            key_limit="$10.00",
+            key_remaining="$8.00",
+            key_percent=20.0,
+            reset_text=None,
+            key_unlimited=False,
+        )
+    )
+
+    assert menubar_title._compose_title(object(), state) == "OR $0.00"
+
+
+def test_openrouter_title_labels_key_scope_and_respects_card_order() -> None:
+    state = _title_state(
+        menubar_state.OpenRouterState(
+            headline="$8.00",
+            account_remaining=None,
+            account_total=None,
+            account_used=None,
+            key_limit="$10.00",
+            key_remaining="$8.00",
+            key_percent=20.0,
+            reset_text=None,
+            key_unlimited=False,
+        )
+    )
+    state.hide_claude = False
+    state.claude_session.percent = 31.0
+
+    assert menubar_title._compose_title(object(), state) == "OR Key $8.00 · 31%"
+
+
+def test_openrouter_title_omits_unavailable_and_localizes_unlimited() -> None:
+    unavailable = _title_state(openrouter.unavailable_state())
+    assert menubar_title._compose_title(object(), unavailable) == "usage"
+
+    unlimited = _title_state(
+        menubar_state.OpenRouterState(
+            headline="unlimited",
+            account_remaining=None,
+            account_total=None,
+            account_used=None,
+            key_limit=None,
+            key_remaining=None,
+            key_percent=None,
+            reset_text=None,
+            key_unlimited=True,
+        )
+    )
+    assert menubar_title._compose_title(object(), unlimited) == "OR Unlimited"

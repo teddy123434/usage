@@ -10,9 +10,9 @@ import time
 from collections.abc import Callable
 from contextlib import suppress
 from dataclasses import replace
-from datetime import timedelta
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
-from types import SimpleNamespace
+from types import MappingProxyType, SimpleNamespace
 from typing import Any, cast
 
 import pytest
@@ -22,6 +22,7 @@ import prefs
 import service_status
 from i18n import _t
 from loaders import codex_loader
+from loaders.ocx_quota import OcxQuotaSnapshot, parse_ocx_quota_payload
 from menubar import agy as menubar_agy
 from menubar import prefs as menubar_prefs
 from menubar import state as menubar_state
@@ -32,6 +33,18 @@ from wintray import app as wintray
 from wintray import login_item as win_login_item
 from wintray import menu as wintray_menu
 from wintray import watch as windows_watch
+
+
+@pytest.fixture(autouse=True)
+def _isolate_ocx_quota(monkeypatch: pytest.MonkeyPatch) -> None:
+    now = datetime.now(UTC)
+    monkeypatch.setattr(
+        wintray,
+        "load_ocx_quota",
+        lambda: OcxQuotaSnapshot(MappingProxyType({}), now, now),
+    )
+    monkeypatch.setattr(wintray, "request_ocx_refresh", lambda: None)
+    monkeypatch.setattr(wintray, "load_route_facts", lambda: {})
 
 
 class _Key:
@@ -732,6 +745,13 @@ def test_panel_menu_data_is_localized_and_reads_current_checks(
     monkeypatch.setattr(wintray, "_hide_codex_enabled", lambda: False)
     monkeypatch.setattr(wintray, "_hide_agy_enabled", lambda: True)
     monkeypatch.setattr(wintray, "_hide_grok_enabled", lambda: False)
+    monkeypatch.setattr(wintray, "_hide_openrouter_enabled", lambda: True)
+    monkeypatch.setattr(
+        wintray,
+        "_quota_source_mode",
+        lambda provider: "ocx" if provider == "codex" else "auto",
+    )
+    monkeypatch.setattr(wintray, "_prefer_ocx_enabled", lambda: True)
     monkeypatch.setattr(win_login_item, "is_enabled", lambda: True)
     monkeypatch.setattr(wintray, "_quota_notifications_enabled", lambda: False)
     monkeypatch.setattr(wintray, "_window_keeper_enabled", lambda: True)
@@ -750,6 +770,8 @@ def test_panel_menu_data_is_localized_and_reads_current_checks(
         "separator",
         "switch_panel",
         "hide_sections_menu",
+        "quota_sources_menu",
+        "prefer_ocx_menu",
         "separator",
         "launch_at_login",
         "quota_notifications_menu",
@@ -761,14 +783,13 @@ def test_panel_menu_data_is_localized_and_reads_current_checks(
     ]
     panels = cast(list[dict[str, object]], menu[2]["children"])
     hidden_sections = cast(list[dict[str, object]], menu[3]["children"])
+    source_groups = cast(list[dict[str, object]], menu[4]["children"])
     assert panels[1]["panelId"] == "matrix"
     assert panels[1]["checked"] is True
-    assert [item["checked"] for item in hidden_sections] == [True, False, True, False]
+    assert [item["checked"] for item in hidden_sections] == [True, False, True, False, True]
+    codex_modes = cast(list[dict[str, object]], source_groups[1]["children"])
+    assert [item["checked"] for item in codex_modes] == [False, False, True]
     assert menu[5]["checked"] is True
-    assert menu[6]["checked"] is False
-    assert menu[7]["checked"] is True
-    assert menu[8]["checked"] is True
-    assert menu[9]["checked"] is False
 
 
 def test_panel_and_tray_menus_render_the_shared_model(
@@ -839,6 +860,11 @@ def test_panel_body_keeps_refresh_and_quit_escape_controls(
     assert 'data-action="quit"' in html
 
 
+def test_windows_panel_bridge_posts_source_mode_and_uses_radio_role() -> None:
+    assert "{ provider: item.provider, mode: item.mode }" in wintray.JS_SHIM
+    assert "item.radio ? 'menuitemradio' : 'menuitemcheckbox'" in wintray.JS_SHIM
+
+
 @pytest.mark.parametrize(
     ("payload", "method", "expected"),
     [
@@ -855,6 +881,12 @@ def test_panel_body_keeps_refresh_and_quit_escape_controls(
             "toggle_hide_section",
             ("hide_grok_section",),
         ),
+        (
+            {"action": "set_quota_source", "provider": "antigravity", "mode": "ocx"},
+            "set_quota_source",
+            ("antigravity", "ocx"),
+        ),
+        ({"action": "toggle_prefer_ocx"}, "toggle_prefer_ocx", ()),
         ({"action": "refresh"}, "refresh", ()),
         ({"action": "toggle_login"}, "toggle_login", ()),
         ({"action": "toggle_quota_notifications"}, "toggle_quota_notifications", ()),
@@ -878,6 +910,52 @@ def test_panel_menu_actions_dispatch_to_controller_methods(
     controller.handle_panel_message(json.dumps(payload))
 
     assert calls == [expected]
+
+
+def test_windows_source_controls_persist_before_refresh(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    controller = wintray._WindowsTrayController(mock=True, interval=60)
+    calls: list[object] = []
+    monkeypatch.setattr(
+        wintray,
+        "_save_quota_source_mode",
+        lambda provider, mode: calls.append(("save-source", provider, mode)) or True,
+    )
+    monkeypatch.setattr(wintray, "_prefer_ocx_enabled", lambda: False)
+    monkeypatch.setattr(
+        wintray,
+        "_save_prefer_ocx",
+        lambda enabled: calls.append(("save-prefer", enabled)) or True,
+    )
+    monkeypatch.setattr(controller, "refresh", lambda: calls.append("refresh"))
+
+    controller.set_quota_source("codex", "ocx")
+    controller.toggle_prefer_ocx()
+
+    assert calls == [
+        ("save-source", "codex", "ocx"),
+        "refresh",
+        ("save-prefer", True),
+        "refresh",
+    ]
+
+
+def test_windows_source_controls_do_not_refresh_after_failed_persist(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    controller = wintray._WindowsTrayController(mock=True, interval=60)
+    refreshed: list[object] = []
+    monkeypatch.setattr(
+        wintray,
+        "_save_quota_source_mode",
+        lambda _provider, _mode: (_ for _ in ()).throw(OSError("disk full")),
+    )
+    monkeypatch.setattr(controller, "refresh", lambda: refreshed.append(True))
+
+    controller.set_quota_source("codex", "ocx")
+
+    assert refreshed == []
 
 
 @pytest.mark.parametrize("panel_id", ["matrix", "aquarium", "win95"])
@@ -913,10 +991,10 @@ def test_card_order_persists_into_the_next_loaded_panel(
     controller.on_loaded()
 
     assert preferences["quota_card_order"] == order
-    assert controller.latest_state.card_order == (*order, "grok")
+    assert controller.latest_state.card_order == (*order, "grok", "openrouter")
     assert len(loaded) == 1
     payload = injected[-1].removeprefix("window.usageApplyState(").removesuffix(")")
-    assert json.loads(payload)["cardOrder"] == [*order, "grok"]
+    assert json.loads(payload)["cardOrder"] == [*order, "grok", "openrouter"]
 
 
 def test_run_app_wires_pystray_and_pywebview(
@@ -1638,6 +1716,40 @@ def test_build_state_fetches_relevant_service_feeds_and_builds_banner(
     assert calls[1].status_url == "https://status.openai.com/api/v2/components.json"
     assert calls[1].component_names == ("Codex API",)
     assert state.service_alerts == ("⚠ Claude service issue: Major outage",)
+
+
+def test_windows_build_state_projects_openrouter_from_the_ocx_refresh(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    controller = wintray._WindowsTrayController(mock=True, interval=60)
+    fixture = Path(__file__).parent / "fixtures" / "ocx_provider_quota.json"
+    snapshot = parse_ocx_quota_payload(
+        json.loads(fixture.read_text(encoding="utf-8")),
+        datetime(2026, 9, 5, tzinfo=UTC),
+    )
+    monkeypatch.setattr(wintray, "load_ocx_quota", lambda: snapshot)
+    monkeypatch.setattr(
+        controller,
+        "_history_source_scan",
+        lambda: menubar_state.HistorySourceScan((), (), ()),
+    )
+    monkeypatch.setattr(controller, "_load_entries", lambda _scan: wintray._RefreshData([], None))
+    monkeypatch.setattr(
+        service_status,
+        "get_service_status",
+        lambda config: service_status.ServiceStatus(
+            config.service_name, False, "operational", "", "cache"
+        ),
+    )
+    monkeypatch.setattr("wintray.app.window_keeper.maybe_ping", lambda *_args: None)
+    monkeypatch.setattr("wintray.app.agy_window_keeper.maybe_ping", lambda *_args: None)
+    monkeypatch.setattr("wintray.app.codex_window_keeper.maybe_ping", lambda *_args: None)
+
+    state = controller._build_state()
+
+    assert state.openrouter is not None
+    assert state.openrouter.headline == "$74.75"
+    assert state.provider_sources["openrouter"].source == "ocx"
 
 
 def test_history_source_scan_is_cached_between_tray_ticks(

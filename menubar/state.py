@@ -190,11 +190,12 @@ class PopoverState:
     hide_codex: bool = False
     hide_agy: bool = True
     hide_grok: bool = True
+    hide_openrouter: bool = False
     codex_stale: CodexStaleState | None = None
     codex_credits: CodexCreditsState | None = None
     agy_stale: AgyStaleState | None = None
     grok_stale: GrokStaleState | None = None
-    card_order: tuple[str, ...] = ("claude", "codex", "agy", "grok")
+    card_order: tuple[str, ...] = ("claude", "codex", "agy", "grok", "openrouter")
     history_error: HistoryLoadErrorState | None = None
     provider_sources: dict[str, ProviderSourceState] = field(default_factory=dict)
     openrouter: OpenRouterState | None = None
@@ -1095,11 +1096,12 @@ def build_popover_state(
     hide_codex: bool,
     hide_agy: bool,
     hide_grok: bool,
+    hide_openrouter: bool = False,
     codex_stale: CodexStaleState | None,
     codex_credits: CodexCreditsState | None = None,
     agy_stale: AgyStaleState | None,
     grok_stale: GrokStaleState | None,
-    card_order: tuple[str, ...] = ("claude", "codex", "agy", "grok"),
+    card_order: tuple[str, ...] = ("claude", "codex", "agy", "grok", "openrouter"),
     history_error: HistoryLoadErrorState | None = None,
     service_statuses: tuple[ServiceStatus, ...] = (),
 ) -> PopoverState:
@@ -1220,6 +1222,7 @@ def build_popover_state(
         hide_codex=hide_codex,
         hide_agy=hide_agy,
         hide_grok=hide_grok,
+        hide_openrouter=hide_openrouter,
         codex_stale=codex_stale,
         codex_credits=codex_credits,
         agy_stale=agy_stale,

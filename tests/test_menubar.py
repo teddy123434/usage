@@ -30,6 +30,7 @@ from menubar import menu as menubar_menu
 from menubar import popover as menubar_popover
 from menubar import prefs as menubar_prefs
 from menubar import refresh as menubar_refresh
+from menubar import source_controls
 from menubar import state as menubar_state
 from menubar import title as menubar_title
 from menubar import update as menubar_update
@@ -615,10 +616,28 @@ def test_switch_panel_menu_contains_update_items(monkeypatch: pytest.MonkeyPatch
         "Codex",
         "Antigravity",
         "Grok",
+        "OpenRouter",
     ]
+    source_parent = next(item for item in main_menu.items if item.title == "Quota Sources")
+    source_groups = source_parent.submenu.items
+    assert [item.title for item in source_groups] == [
+        "Claude Code",
+        "Codex",
+        "Antigravity",
+        "Grok",
+    ]
+    assert [item.title for item in source_groups[1].submenu.items] == [
+        "Auto",
+        "Native",
+        "OCX",
+    ]
+    assert [item.state for item in source_groups[1].submenu.items] == [1, 0, 0]
+    prefer_ocx = next(item for item in main_menu.items if item.title == "Prefer OCX")
+    assert prefer_ocx.action == "togglePreferOcx:"
+    assert prefer_ocx.state == 0
     hide_parent = next(item for item in main_menu.items if item.submenu is hide_submenu)
     assert hide_parent.title == "Hide Sections"
-    claude_item, codex_item, agy_item, grok_item = hide_submenu.items
+    claude_item, codex_item, agy_item, grok_item, openrouter_item = hide_submenu.items
     assert claude_item.action == "toggleHideClaude:"
     assert claude_item.state == 0
     assert codex_item.action == "toggleHideCodex:"
@@ -627,6 +646,8 @@ def test_switch_panel_menu_contains_update_items(monkeypatch: pytest.MonkeyPatch
     assert agy_item.state == 0
     assert grok_item.action == "toggleHideGrok:"
     assert grok_item.state == 0
+    assert openrouter_item.action == "toggleHideOpenRouter:"
+    assert openrouter_item.state == 0
 
     # Resume Last Session is a single tooltip-backed toggle (no group header, no indent).
     butler = next(item for item in main_menu.items if item.action == "toggleSessionResume:")
@@ -1467,6 +1488,55 @@ def test_toggle_hide_grok_persists_preference_and_updates_state(
     assert sender.state == 1
     assert delegate.latest_state.hide_grok is True
     assert delegate.popover_controller.states == [delegate.latest_state]
+
+
+def test_select_quota_source_refreshes_only_after_persist_succeeds(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    sender = _FakeMenuItem()
+    sender.represented = "antigravity:ocx"
+    delegate = menubar.AppDelegate.alloc().initWithMock_interval_(True, 60)
+    saved: list[tuple[object, object]] = []
+    refreshed: list[object] = []
+    monkeypatch.setattr(
+        source_controls,
+        "_save_quota_source_mode",
+        lambda provider, mode: saved.append((provider, mode)) or True,
+    )
+    monkeypatch.setattr(delegate, "refreshNow_", refreshed.append)
+
+    delegate.selectQuotaSource_(sender)
+
+    assert saved == [("antigravity", "ocx")]
+    assert refreshed == [None]
+
+    monkeypatch.setattr(
+        source_controls,
+        "_save_quota_source_mode",
+        lambda _provider, _mode: (_ for _ in ()).throw(OSError("disk full")),
+    )
+    delegate.selectQuotaSource_(sender)
+    assert refreshed == [None]
+
+
+def test_toggle_prefer_ocx_persists_before_refresh(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    sender = _FakeMenuItem()
+    delegate = menubar.AppDelegate.alloc().initWithMock_interval_(True, 60)
+    calls: list[object] = []
+    monkeypatch.setattr(source_controls, "_prefer_ocx_enabled", lambda: False)
+    monkeypatch.setattr(
+        source_controls,
+        "_save_prefer_ocx",
+        lambda enabled: calls.append(("save", enabled)) or True,
+    )
+    monkeypatch.setattr(delegate, "refreshNow_", lambda value: calls.append(("refresh", value)))
+
+    delegate.togglePreferOcx_(sender)
+
+    assert calls == [("save", True), ("refresh", None)]
+    assert sender.state == 1
 
 
 def test_popover_size_deducts_hidden_cards(monkeypatch: pytest.MonkeyPatch) -> None:

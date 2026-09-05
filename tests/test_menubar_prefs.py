@@ -46,6 +46,7 @@ def test_quota_card_order_validates_preferences() -> None:
         "claude",
         "codex",
         "grok",
+        "openrouter",
     )
     invalid_values = (
         None,
@@ -59,6 +60,7 @@ def test_quota_card_order_validates_preferences() -> None:
             "codex",
             "agy",
             "grok",
+            "openrouter",
         )
 
 
@@ -70,6 +72,7 @@ def test_quota_card_order_pads_missing_cards_after_upgrade() -> None:
         "claude",
         "codex",
         "grok",
+        "openrouter",
     )
 
 
@@ -80,9 +83,21 @@ def test_save_quota_card_order_ignores_invalid_values(
     monkeypatch.setattr(prefs, "PREFERENCES_FILE", preferences_file)
 
     assert menubar_prefs._save_quota_card_order(["agy", "claude", "codex"]) is True
-    assert prefs._load_preferences()["quota_card_order"] == ["agy", "claude", "codex", "grok"]
+    assert prefs._load_preferences()["quota_card_order"] == [
+        "agy",
+        "claude",
+        "codex",
+        "grok",
+        "openrouter",
+    ]
     assert menubar_prefs._save_quota_card_order(["agy", "claude", "claude"]) is False
-    assert prefs._load_preferences()["quota_card_order"] == ["agy", "claude", "codex", "grok"]
+    assert prefs._load_preferences()["quota_card_order"] == [
+        "agy",
+        "claude",
+        "codex",
+        "grok",
+        "openrouter",
+    ]
 
 
 def test_panel_flavor_round_trip(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
@@ -204,6 +219,23 @@ def test_prefer_ocx_is_strict_boolean_and_defaults_false() -> None:
     assert menubar_prefs._prefer_ocx_enabled({}) is False
     assert menubar_prefs._prefer_ocx_enabled({"prefer_ocx": True}) is True
     assert menubar_prefs._prefer_ocx_enabled({"prefer_ocx": 1}) is False
+
+
+def test_hide_openrouter_is_strict_boolean_and_defaults_false() -> None:
+    assert menubar_prefs._hide_openrouter_enabled({}) is False
+    assert menubar_prefs._hide_openrouter_enabled({"hide_openrouter_section": True}) is True
+    assert menubar_prefs._hide_openrouter_enabled({"hide_openrouter_section": 1}) is False
+
+
+def test_save_prefer_ocx_round_trips(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    preferences_file = tmp_path / "usage-preferences.json"
+    monkeypatch.setattr(prefs, "PREFERENCES_FILE", preferences_file)
+
+    assert menubar_prefs._save_prefer_ocx(True) is True
+    assert menubar_prefs._prefer_ocx_enabled() is True
+    assert menubar_prefs._save_prefer_ocx(False) is True
+    assert menubar_prefs._prefer_ocx_enabled() is False
+    assert menubar_prefs._save_prefer_ocx(1) is False
 
 
 class _EqualToEveryString:

@@ -17,7 +17,10 @@ from menubar.prefs import (
     _hide_claude_enabled,
     _hide_codex_enabled,
     _hide_grok_enabled,
+    _hide_openrouter_enabled,
+    _prefer_ocx_enabled,
     _quota_notifications_enabled,
+    _quota_source_mode,
     _window_keeper_enabled,
 )
 
@@ -123,11 +126,60 @@ def build_switch_menu(app: _SwitchMenuApp, sender: Any) -> None:
             state=_hide_grok_enabled(),
         )
     )
+    hide_submenu.addItem_(
+        build_menu_item(
+            app.language,
+            "openrouter_name",
+            "toggleHideOpenRouter:",
+            target=app,
+            state=_hide_openrouter_enabled(),
+        )
+    )
     hide_parent = NSMenuItem.alloc().initWithTitle_action_keyEquivalent_(
         _t(app.language, "hide_sections_menu"), "", ""
     )
     hide_parent.setSubmenu_(hide_submenu)
     menu.addItem_(hide_parent)
+    source_submenu = NSMenu.alloc().initWithTitle_(_t(app.language, "quota_sources_menu"))
+    provider_keys = (
+        ("claude", "claude_name"),
+        ("codex", "codex_name"),
+        ("antigravity", "agy_name"),
+        ("grok", "grok_name"),
+    )
+    for provider, title_key in provider_keys:
+        mode_submenu = NSMenu.alloc().initWithTitle_(_t(app.language, title_key))
+        current_mode = _quota_source_mode(provider)
+        for mode in ("auto", "native", "ocx"):
+            mode_submenu.addItem_(
+                build_menu_item(
+                    app.language,
+                    f"quota_source_{mode}",
+                    "selectQuotaSource:",
+                    target=app,
+                    represented=f"{provider}:{mode}",
+                    state=current_mode == mode,
+                )
+            )
+        provider_parent = NSMenuItem.alloc().initWithTitle_action_keyEquivalent_(
+            _t(app.language, title_key), "", ""
+        )
+        provider_parent.setSubmenu_(mode_submenu)
+        source_submenu.addItem_(provider_parent)
+    source_parent = NSMenuItem.alloc().initWithTitle_action_keyEquivalent_(
+        _t(app.language, "quota_sources_menu"), "", ""
+    )
+    source_parent.setSubmenu_(source_submenu)
+    menu.addItem_(source_parent)
+    menu.addItem_(
+        build_menu_item(
+            app.language,
+            "prefer_ocx_menu",
+            "togglePreferOcx:",
+            target=app,
+            state=_prefer_ocx_enabled(),
+        )
+    )
     # Plain on/off switches sit together in the second group.
     menu.addItem_(NSMenuItem.separatorItem())
     menu.addItem_(

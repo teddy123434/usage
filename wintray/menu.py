@@ -15,6 +15,9 @@ type CheckKey = Literal[
     "hide_codex",
     "hide_agy",
     "hide_grok",
+    "hide_openrouter",
+    "prefer_ocx",
+    "source_mode",
     "launch_at_login",
     "quota_notifications",
     "window_keeper",
@@ -37,6 +40,8 @@ class MenuCommand:
     argument_name: str | None = None
     argument_value: str | None = None
     radio: bool = False
+    provider: str | None = None
+    source_mode: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -97,12 +102,44 @@ def windows_menu_model(panels: tuple[Panel, ...]) -> tuple[MenuEntry, ...]:
             argument_name="preferenceKey",
             argument_value="hide_grok_section",
         ),
+        MenuCommand(
+            "openrouter_name",
+            "toggle_hide_section",
+            checked_by="hide_openrouter",
+            argument_name="preferenceKey",
+            argument_value="hide_openrouter_section",
+        ),
+    )
+    source_providers = (
+        ("claude", "claude_name"),
+        ("codex", "codex_name"),
+        ("antigravity", "agy_name"),
+        ("grok", "grok_name"),
+    )
+    source_groups: tuple[MenuEntry, ...] = tuple(
+        MenuGroup(
+            title_key,
+            tuple(
+                MenuCommand(
+                    f"quota_source_{mode}",
+                    "set_quota_source",
+                    checked_by="source_mode",
+                    radio=True,
+                    provider=provider,
+                    source_mode=mode,
+                )
+                for mode in ("auto", "native", "ocx")
+            ),
+        )
+        for provider, title_key in source_providers
     )
     return (
         MenuCommand("panel_ai_daily", "open_ai_daily"),
         MenuSeparator(_PANEL_ONLY),
         MenuGroup("switch_panel", panel_choices),
         MenuGroup("hide_sections_menu", hidden_sections),
+        MenuGroup("quota_sources_menu", source_groups),
+        MenuCommand("prefer_ocx_menu", "toggle_prefer_ocx", checked_by="prefer_ocx"),
         MenuSeparator(_PANEL_ONLY),
         MenuCommand("launch_at_login", "toggle_login", checked_by="launch_at_login"),
         MenuCommand(

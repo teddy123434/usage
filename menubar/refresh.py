@@ -39,6 +39,7 @@ from menubar.prefs import (
     _hide_claude_enabled,
     _hide_codex_enabled,
     _hide_grok_enabled,
+    _hide_openrouter_enabled,
     _quota_card_order,
     _quota_last_source,
     _quota_source_mode,
@@ -168,6 +169,7 @@ def build_result(app: _RefreshApp, sources: RefreshSources) -> dict[str, Any]:
     hide_codex = fallback_state.hide_codex
     hide_agy = agy_result.hide_agy or _hide_agy_enabled()
     hide_grok = grok_result.hide_grok or _hide_grok_enabled()
+    hide_openrouter = _hide_openrouter_enabled()
     card_order = _quota_card_order()
     outcome: PollOutcome | None = None
     try:
@@ -202,6 +204,7 @@ def build_result(app: _RefreshApp, sources: RefreshSources) -> dict[str, Any]:
         hide_codex = _hide_codex_enabled()
         hide_agy = agy_result.hide_agy or _hide_agy_enabled()
         hide_grok = grok_result.hide_grok or _hide_grok_enabled()
+        hide_openrouter = _hide_openrouter_enabled()
     except Exception:
         if os.environ.get("USAGE_DEBUG") == "1":
             logger.warning("local usage refresh failed", exc_info=True)
@@ -246,6 +249,7 @@ def build_result(app: _RefreshApp, sources: RefreshSources) -> dict[str, Any]:
             hide_codex=hide_codex,
             hide_agy=hide_agy,
             hide_grok=hide_grok,
+            hide_openrouter=hide_openrouter,
             codex_stale=codex_stale,
             codex_credits=codex_credits,
             agy_stale=agy_projection.stale,
@@ -296,6 +300,7 @@ def build_result(app: _RefreshApp, sources: RefreshSources) -> dict[str, Any]:
         state.hide_codex = hide_codex
         state.hide_agy = hide_agy
         state.hide_grok = hide_grok
+        state.hide_openrouter = hide_openrouter
         state.card_order = card_order
 
     _project_selected_quota_sources(app, sources, state, outcome)

@@ -20,7 +20,7 @@ from datetime import date, datetime, timedelta
 from enum import IntEnum
 from importlib import metadata
 from pathlib import Path
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, cast
 from uuid import UUID
 
 import quota.agy_window_keeper as agy_window_keeper
@@ -32,8 +32,10 @@ from i18n import _t
 from installer.statusline_settings import _statusline_enabled, _toggle_statusline_settings
 from loaders import codex_loader, grok_loader
 from loaders.history_loader import UsageEntry, load_entries
+from loaders.ocx_quota import load_ocx_quota, request_ocx_refresh
 from menubar import agy as menubar_agy
 from menubar import grok as menubar_grok
+from menubar import refresh as menubar_refresh
 from menubar import state as menubar_state
 from menubar.prefs import (
     _auto_update_check_enabled,
@@ -41,13 +43,19 @@ from menubar.prefs import (
     _hide_claude_enabled,
     _hide_codex_enabled,
     _hide_grok_enabled,
+    _hide_openrouter_enabled,
     _panel_flavor,
+    _prefer_ocx_enabled,
     _quota_card_order,
     _quota_notification_thresholds,
     _quota_notifications_enabled,
+    _quota_source_mode,
     _save_panel_flavor,
+    _save_prefer_ocx,
+    _save_quota_source_mode,
     _window_keeper_enabled,
 )
+from menubar.quota_sources import load_route_facts
 from panels.dynamic_height import clamp_content_height, inject_content_height_script
 from panels.panel_scale import fit_panel_size, fit_scale
 from panels.payload import _load_panel_html, _state_payload
@@ -217,10 +225,11 @@ window.webkit.messageHandlers.usage = {
     var row = document.createElement('button');
     row.type = 'button';
     row.className = 'usage-panel-menu-item';
-    row.setAttribute('role', 'menuitemcheckbox');
+    row.setAttribute('role', item.radio ? 'menuitemradio' : 'menuitemcheckbox');
     row.textContent = (item.checked ? '✓  ' : '    ') + item.label;
     row.addEventListener('click', function() {
-      var extra = item.panelId ? { panel_id: item.panelId } :
+      var extra = item.provider ? { provider: item.provider, mode: item.mode } :
+        item.panelId ? { panel_id: item.panelId } :
         item.preferenceKey ? { preference_key: item.preferenceKey } : undefined;
       post(item.action, extra);
       closeMenu();
@@ -1348,7 +1357,7 @@ class _WindowsTrayController:
             )
         agy_window_keeper.maybe_ping(agy_result, self.mock)
         codex_window_keeper.maybe_ping(self.mock)
-        return menubar_state.build_popover_state(
+        state = menubar_state.build_popover_state(
             outcome=outcome,
             codex_rows=codex_rows,
             agy_rows=(agy.session, agy.weekly),
@@ -1378,6 +1387,7 @@ class _WindowsTrayController:
             hide_codex=_hide_codex_enabled(),
             hide_agy=agy_result.hide_agy or _hide_agy_enabled(),
             hide_grok=grok_result.hide_grok or _hide_grok_enabled(),
+            hide_openrouter=_hide_openrouter_enabled(),
             codex_stale=codex_stale,
             codex_credits=codex_credits,
             agy_stale=agy.stale,
@@ -1388,6 +1398,42 @@ class _WindowsTrayController:
             ),
             service_statuses=service_statuses,
         )
+        try:
+            ocx_snapshot = load_ocx_quota()
+        except Exception:
+            ocx_snapshot = None
+            if os.environ.get("USAGE_DEBUG") == "1":
+                logger.warning("Windows OCX quota load failed", exc_info=True)
+        try:
+            route_facts = load_route_facts()
+        except Exception:
+            route_facts = {}
+        sources = menubar_refresh.RefreshSources(
+            codex_result={
+                "codex_rows": codex_rows,
+                "codex_5h_pct": _codex_pct,
+                "codex_model": _model,
+                "codex_stale": codex_stale,
+                "codex_credits": codex_credits,
+            },
+            history_scan=scan,
+            agy_result=agy_result,
+            agy_projection=agy,
+            grok_result=grok_result,
+            grok_projection=grok,
+            debug_timing=debug_timing,
+            ocx_snapshot=ocx_snapshot,
+            route_facts=route_facts,
+        )
+        menubar_refresh._project_selected_quota_sources(
+            cast(Any, self), sources, state, outcome
+        )
+        try:
+            request_ocx_refresh()
+        except Exception:
+            if os.environ.get("USAGE_DEBUG") == "1":
+                logger.warning("Windows OCX refresh request failed", exc_info=True)
+        return state
 
     def _service_statuses(self) -> tuple[service_status.ServiceStatus, ...]:
         statuses: list[service_status.ServiceStatus] = []
@@ -1528,8 +1574,30 @@ class _WindowsTrayController:
         self.latest_state.hide_codex = _hide_codex_enabled()
         self.latest_state.hide_agy = _hide_agy_enabled()
         self.latest_state.hide_grok = _hide_grok_enabled()
+        self.latest_state.hide_openrouter = _hide_openrouter_enabled()
         if self.visible:
             self.inject_state()
+
+    def set_quota_source(self, provider: object, mode: object) -> None:
+        try:
+            saved = _save_quota_source_mode(provider, mode)
+        except Exception:
+            if os.environ.get("USAGE_DEBUG") == "1":
+                logger.warning("Windows quota source preference save failed", exc_info=True)
+            return
+        if saved:
+            self.refresh()
+
+    def toggle_prefer_ocx(self, _icon: Any = None, _item: Any = None) -> None:
+        enabled = not _prefer_ocx_enabled()
+        try:
+            saved = _save_prefer_ocx(enabled)
+        except Exception:
+            if os.environ.get("USAGE_DEBUG") == "1":
+                logger.warning("Windows prefer OCX preference save failed", exc_info=True)
+            return
+        if saved:
+            self.refresh()
 
     def toggle_quota_notifications(self, _icon: Any = None, _item: Any = None) -> None:
         preferences = _load_preferences()
@@ -1827,8 +1895,13 @@ class _WindowsTrayController:
                     "hide_codex_section",
                     "hide_agy_section",
                     "hide_grok_section",
+                    "hide_openrouter_section",
                 }:
                     self.toggle_hide_section(preference_key)
+            elif action == "set_quota_source":
+                self.set_quota_source(payload.get("provider"), payload.get("mode"))
+            elif action == "toggle_prefer_ocx":
+                self.toggle_prefer_ocx()
             elif action == "open_ai_daily":
                 self.open_ai_daily()
             elif action == "reset_panel_position":
@@ -1943,12 +2016,20 @@ def _menu_checked(controller: _WindowsTrayController, entry: wintray_menu.MenuCo
         "hide_codex": _hide_codex_enabled,
         "hide_agy": _hide_agy_enabled,
         "hide_grok": _hide_grok_enabled,
+        "hide_openrouter": _hide_openrouter_enabled,
         "launch_at_login": win_login_item.is_enabled,
         "quota_notifications": _quota_notifications_enabled,
         "window_keeper": _window_keeper_enabled,
         "session_resume": _session_resume_enabled,
         "terse_mode": _terse_mode_enabled,
+        "prefer_ocx": _prefer_ocx_enabled,
     }
+    if entry.checked_by == "source_mode":
+        return (
+            entry.provider is not None
+            and entry.source_mode is not None
+            and _quota_source_mode(entry.provider) == entry.source_mode
+        )
     return checks[entry.checked_by]() if entry.checked_by is not None else False
 
 
@@ -1970,6 +2051,12 @@ def _panel_menu_entry(
         data["checked"] = _menu_checked(controller, entry)
     if entry.argument_name is not None:
         data[entry.argument_name] = entry.argument_value
+    if entry.provider is not None:
+        data["provider"] = entry.provider
+    if entry.source_mode is not None:
+        data["mode"] = entry.source_mode
+    if entry.radio:
+        data["radio"] = True
     return data
 
 
@@ -1989,7 +2076,20 @@ def _tray_menu_entry(
     kwargs: dict[str, object] = {"radio": entry.radio}
     if entry.checked_by is not None:
         kwargs["checked"] = lambda _item: _menu_checked(controller, entry)
-    if entry.argument_value is not None:
+    if entry.provider is not None and entry.source_mode is not None:
+        provider = entry.provider
+        source_mode = entry.source_mode
+
+        def action(
+            _icon: Any,
+            _item: Any,
+            *,
+            provider: str = provider,
+            source_mode: str = source_mode,
+        ) -> Any:
+            return getattr(controller, entry.action)(provider, source_mode)
+
+    elif entry.argument_value is not None:
         value = entry.argument_value
 
         def action(_icon: Any, _item: Any, *, value: str = value) -> Any:

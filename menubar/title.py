@@ -18,6 +18,7 @@ from AppKit import (
     NSMutableAttributedString,
 )
 
+from i18n import _t
 from menubar.chrome import (
     _agy_menubar_icon,
     _claude_menubar_icon,
@@ -63,42 +64,20 @@ def _menubar_text_string(app: _TitleApp, text: str) -> Any:
 
 def _menubar_attributed_title(app: _TitleApp, state: PopoverState) -> Any:
     title = NSMutableAttributedString.alloc().init()
-    if not state.hide_claude:
-        claude_percent = (
-            "--"
-            if state.claude_session.percent is None
-            else f"{_format_percent(state.claude_session.percent)}%"
-        )
-        title.appendAttributedString_(_menubar_icon_attachment_string(_claude_menubar_icon()))
-        title.appendAttributedString_(_menubar_text_string(app, f" {claude_percent}"))
-    if not state.hide_codex and (app.codex_5h_pct is not None or state.hide_claude):
-        codex_percent = (
-            "--"
-            if app.codex_5h_pct is None
-            else f"{_format_percent(float(app.codex_5h_pct))}%"
-        )
-        if not state.hide_claude:
-            title.appendAttributedString_(_menubar_text_string(app, "  "))
-        title.appendAttributedString_(_menubar_icon_attachment_string(_codex_menubar_icon()))
-        title.appendAttributedString_(_menubar_text_string(app, f" {codex_percent}"))
-    agy_session_percent = state.agy_session.percent
-    agy_visible = not state.hide_agy and agy_session_percent is not None
-    if agy_visible:
-        assert agy_session_percent is not None
-        agy_percent = f"{_format_percent(agy_session_percent)}%"
+    icons = {
+        "claude": _claude_menubar_icon,
+        "codex": _codex_menubar_icon,
+        "agy": _agy_menubar_icon,
+        "grok": _grok_menubar_icon,
+    }
+    for provider, text in _title_segments(app, state):
         if title.length() > 0:
             title.appendAttributedString_(_menubar_text_string(app, "  "))
-        title.appendAttributedString_(_menubar_icon_attachment_string(_agy_menubar_icon()))
-        title.appendAttributedString_(_menubar_text_string(app, f" {agy_percent}"))
-    grok_weekly_percent = state.grok_weekly.percent
-    grok_visible = not state.hide_grok and grok_weekly_percent is not None
-    if grok_visible:
-        assert grok_weekly_percent is not None
-        grok_percent = f"{_format_percent(grok_weekly_percent)}%"
-        if title.length() > 0:
-            title.appendAttributedString_(_menubar_text_string(app, "  "))
-        title.appendAttributedString_(_menubar_icon_attachment_string(_grok_menubar_icon()))
-        title.appendAttributedString_(_menubar_text_string(app, f" {grok_percent}"))
+        icon = icons.get(provider)
+        if icon is not None:
+            title.appendAttributedString_(_menubar_icon_attachment_string(icon()))
+            text = f" {text}"
+        title.appendAttributedString_(_menubar_text_string(app, text))
     if title.length() == 0:
         # Both providers hidden: keep a recognizable, clickable status item.
         title.appendAttributedString_(_menubar_icon_attachment_string(_claude_menubar_icon()))
@@ -121,26 +100,47 @@ def _set_button_title(app: _TitleApp, state: PopoverState) -> None:
 
 
 def _compose_title(app: _TitleApp, state: PopoverState) -> str:
-    parts: list[str] = []
+    parts = [text for _provider, text in _title_segments(app, state)]
+    # Both providers hidden: keep a recognizable, clickable status item.
+    return " · ".join(parts) if parts else "usage"
+
+
+def _title_segments(app: _TitleApp, state: PopoverState) -> list[tuple[str, str]]:
+    segments: dict[str, str] = {}
     if not state.hide_claude:
-        claude = (
+        segments["claude"] = (
             "--"
             if state.claude_session.percent is None
             else f"{_format_percent(state.claude_session.percent)}%"
         )
-        parts.append(claude)
     if not state.hide_codex and (app.codex_5h_pct is not None or state.hide_claude):
-        codex = (
+        segments["codex"] = (
             "--"
             if app.codex_5h_pct is None
             else f"{_format_percent(float(app.codex_5h_pct))}%"
         )
-        parts.append(codex)
     if not state.hide_agy and state.agy_session.percent is not None:
-        agy = f"{_format_percent(state.agy_session.percent)}%"
-        parts.append(agy)
+        segments["agy"] = f"{_format_percent(state.agy_session.percent)}%"
     if not state.hide_grok and state.grok_weekly.percent is not None:
-        grok = f"{_format_percent(state.grok_weekly.percent)}%"
-        parts.append(grok)
-    # Both providers hidden: keep a recognizable, clickable status item.
-    return " · ".join(parts) if parts else "usage"
+        segments["grok"] = f"{_format_percent(state.grok_weekly.percent)}%"
+    openrouter = _openrouter_title_text(state)
+    if openrouter is not None:
+        segments["openrouter"] = openrouter
+    return [(provider, segments[provider]) for provider in state.card_order if provider in segments]
+
+
+def _openrouter_title_text(state: PopoverState) -> str | None:
+    quota = state.openrouter
+    if state.hide_openrouter or quota is None:
+        return None
+    if quota.account_remaining is not None:
+        return f"OR {quota.account_remaining}"
+    if quota.key_unlimited:
+        return _t(state.language, "openrouter_unlimited_headline")
+    if quota.key_remaining is not None:
+        return _t(
+            state.language,
+            "openrouter_key_headline",
+            amount=quota.key_remaining,
+        )
+    return None

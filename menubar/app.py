@@ -73,6 +73,7 @@ from menubar import actions as menubar_actions
 from menubar import menu as menubar_menu
 from menubar import notify as menubar_notify
 from menubar import refresh as menubar_refresh
+from menubar import source_controls
 from menubar import state as menubar_state
 from menubar import title as menubar_title
 from menubar import update as menubar_update
@@ -559,6 +560,13 @@ class AppDelegate(NSObject):
 
     def toggleHideGrok_(self, sender: Any) -> None:
         self._toggle_hide_section(sender, "hide_grok_section", "hide_grok", _hide_grok_enabled)
+
+    def toggleHideOpenRouter_(self, sender: Any) -> None:
+        source_controls.toggle_openrouter_visibility(self, sender)
+    def selectQuotaSource_(self, sender: Any) -> None:
+        source_controls.select_quota_source(self, sender)
+    def togglePreferOcx_(self, sender: Any) -> None:
+        source_controls.toggle_prefer_ocx(self, sender)
 
     def toggleQuotaNotifications_(self, sender: Any) -> None:
         self._mark_switch_menu_action()
