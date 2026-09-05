@@ -767,6 +767,10 @@ class _WindowsTrayController:
         self._window_mutations: deque[Callable[[], None]] = deque()
         self._window_mutation_lock = threading.Lock()
         self._window_mutation_scheduled = False
+        # This lock only issues and publishes sequence numbers; no WebView or
+        # WinForms call runs while it is held.
+        self._panel_placement_lock = threading.Lock()
+        self._panel_placement_sequence = 0
         self._panel_placement_generation = 0
 
     def _empty_state(self) -> menubar_state.PopoverState:
@@ -840,14 +844,27 @@ class _WindowsTrayController:
         if self.visible:
             self._place_window()
 
-    def _apply_panel_viewport(self, scrollable: bool) -> bool:
+    def _apply_panel_viewport(self, scrollable: bool, generation: int) -> bool | None:
         if self.window is not None and hasattr(self.window, "evaluate_js"):
             try:
                 result = self.window.evaluate_js(
+                    "(function() { "
+                    f"const generation = {generation}; "
+                    "const current = Number(window.usagePanelViewportGeneration || 0); "
+                    'if (current > generation) return "stale"; '
+                    "const applied = "
                     "typeof window.usageApplyPanelViewport === 'function' && "
-                    f"window.usageApplyPanelViewport({str(scrollable).lower()})"
+                    f"window.usageApplyPanelViewport({str(scrollable).lower()}); "
+                    "if (applied) { "
+                    "window.usagePanelViewportGeneration = generation; "
+                    'return "applied"; '
+                    "} "
+                    'return "unavailable"; '
+                    "})()"
                 )
-                return result is True
+                if result == "stale":
+                    return None
+                return result == "applied" or result is True
             except Exception:
                 logger.exception("Unable to apply panel viewport")
             return False
@@ -1010,19 +1027,28 @@ class _WindowsTrayController:
         force_default: bool = False,
         _reconcile_on_mismatch: bool = True,
     ) -> None:
+        with self._panel_placement_lock:
+            self._panel_placement_sequence += 1
+            generation = self._panel_placement_sequence
         placement = self._resolve_panel_placement(force_default=force_default)
         if placement is None:
             return
-        viewport_applied = self._apply_panel_viewport(placement.viewport.scrollable)
+        viewport_applied = self._apply_panel_viewport(
+            placement.viewport.scrollable,
+            generation,
+        )
+        if viewport_applied is None:
+            return
         if placement.viewport.scrollable and not viewport_applied:
             return
-
-        with self._window_mutation_lock:
-            self._panel_placement_generation += 1
-            generation = self._panel_placement_generation
-        rendered_viewport = _RenderedPanelViewport(
-            placement.work_area, placement.viewport, generation
-        )
+        with self._panel_placement_lock:
+            self._panel_placement_generation = max(
+                self._panel_placement_generation,
+                generation,
+            )
+            rendered_viewport = _RenderedPanelViewport(
+                placement.work_area, placement.viewport, generation
+            )
         self._dispatch_window_mutation(
             lambda: self._place_window_on_ui_thread(
                 force_default=force_default,
@@ -1071,10 +1097,9 @@ class _WindowsTrayController:
             placement.work_area != rendered_viewport.work_area
             or placement.viewport != rendered_viewport.viewport
         ):
-            with self._window_mutation_lock:
-                newer_placement_exists = (
-                    self._panel_placement_generation != rendered_viewport.generation
-                )
+            newer_placement_exists = (
+                self._panel_placement_generation != rendered_viewport.generation
+            )
             if (
                 reconcile_on_mismatch
                 and not newer_placement_exists

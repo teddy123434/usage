@@ -967,6 +967,80 @@ def test_delayed_cross_monitor_drag_reconciles_scroll_mode_without_new_event(
     assert mutations == [("resize", 380, 1000), ("move", 100, 100)]
 
 
+def test_concurrent_viewport_application_keeps_generation_in_js_order(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    a_applied = threading.Event()
+    b_numbered = threading.Event()
+    redundant_reconcile = threading.Event()
+    callbacks: list[Callable[[], None]] = []
+    javascript: list[bool] = []
+    latest_js_generation = 0
+
+    class SelectiveGenerationGate:
+        def __enter__(self) -> None:
+            if threading.current_thread().name == "placement-a":
+                assert b_numbered.wait(2)
+
+        def __exit__(self, *_args: object) -> None:
+            if threading.current_thread().name == "placement-b":
+                b_numbered.set()
+
+    short = wintray._PanelPlacement(
+        (1000, 0, 2000, 800),
+        (1200, 100),
+        wintray.PanelViewport(380, 776, 1000, True),
+    )
+    tall = wintray._PanelPlacement(
+        (0, 0, 1000, 1200),
+        (100, 100),
+        wintray.PanelViewport(380, 1000, 1000, False),
+    )
+    controller = wintray._WindowsTrayController(mock=True, interval=60)
+    controller.window = SimpleNamespace(
+        resize=lambda _width, _height: None,
+        move=lambda _x, _y: None,
+    )
+    controller._window_mutation_lock = SelectiveGenerationGate()  # type: ignore[assignment]
+
+    def resolve(*, force_default: bool = False) -> object:
+        name = threading.current_thread().name
+        return short if name == "placement-a" else tall
+
+    def apply(scrollable: bool, generation: int | None = None) -> bool | None:
+        nonlocal latest_js_generation
+        javascript.append(scrollable)
+        if threading.current_thread().name == "placement-a":
+            a_applied.set()
+        elif len(javascript) > 2:
+            redundant_reconcile.set()
+        if generation is not None:
+            if generation < latest_js_generation:
+                return None
+            latest_js_generation = generation
+        return True
+
+    monkeypatch.setattr(controller, "_resolve_panel_placement", resolve)
+    monkeypatch.setattr(controller, "_apply_panel_viewport", apply)
+    monkeypatch.setattr(controller, "_dispatch_window_mutation", callbacks.append)
+
+    first = threading.Thread(target=controller._place_window, name="placement-a")
+    first.start()
+    assert a_applied.wait(2)
+    second = threading.Thread(target=controller._place_window, name="placement-b")
+    second.start()
+    first.join(2)
+    second.join(2)
+    assert not first.is_alive()
+    assert not second.is_alive()
+
+    for callback in callbacks:
+        callback()
+
+    assert not redundant_reconcile.wait(0.5)
+    assert javascript == [True, False]
+
+
 def test_load_preferences_non_utf8(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
