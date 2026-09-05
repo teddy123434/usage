@@ -22,8 +22,7 @@ import talent_market_bridge
 from menubar.prefs import (
     _panel_flavor,
     _save_panel_flavor,
-    _save_quota_card_order,
-    _valid_quota_card_order,
+    _save_rendered_quota_card_order,
 )
 from panels.dynamic_height import inject_content_height_script
 from panels.payload import (
@@ -179,15 +178,20 @@ class UsageScriptBridge(NSObject):
                     self.delegate.panelBeginWindowDrag_(self.web_view)
                     return
                 if parsed["action"] == "set_card_order":
-                    order = _valid_quota_card_order(parsed.get("order"))
-                    if order is not None:
-                        _save_quota_card_order(list(order))
-                        # Keep the in-memory state in sync so re-injections
-                        # (popover reopen, panel switch) before the next poll
-                        # don't snap the cards back to the stale order.
-                        state = getattr(self.delegate, "latest_state", None)
-                        if state is not None:
-                            state.card_order = order
+                    try:
+                        order = _save_rendered_quota_card_order(parsed.get("order"))
+                    except Exception:
+                        if os.environ.get("USAGE_DEBUG") == "1":
+                            logger.warning("panel card-order save failed", exc_info=True)
+                        return
+                    if order is None:
+                        return
+                    # Keep the in-memory state in sync so re-injections
+                    # (popover reopen, panel switch) before the next poll
+                    # don't snap the cards back to the stale order.
+                    state = getattr(self.delegate, "latest_state", None)
+                    if state is not None:
+                        state.card_order = order
                     return
                 if parsed["action"] == "set_panel_flavor":
                     _save_panel_flavor(parsed.get("flavor"))

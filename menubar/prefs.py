@@ -14,6 +14,7 @@ from menubar.quota_sources import SourceMode
 from prefs import _load_preferences, _save_preferences
 
 DEFAULT_QUOTA_CARD_ORDER = ("claude", "codex", "agy", "grok", "openrouter")
+MAX_QUOTA_CARD_ID_LENGTH = 32
 DEFAULT_PANEL_FLAVOR = "mocha"
 PANEL_FLAVORS = ("latte", "frappe", "macchiato", "mocha")
 DUAL_SOURCE_PROVIDERS = ("claude", "codex", "antigravity", "grok")
@@ -87,11 +88,37 @@ def _save_quota_card_order(order: object) -> bool:
     if valid_order is None:
         return False
     prefs = _load_preferences()
-    prefs["quota_card_order"] = list(
-        _merge_rendered_quota_card_order(prefs.get("quota_card_order"), valid_order)
-    )
+    prefs["quota_card_order"] = list(valid_order)
     _save_preferences(prefs)
     return True
+
+
+def _save_rendered_quota_card_order(order: object) -> tuple[str, ...] | None:
+    rendered_order = _valid_rendered_quota_card_order(order)
+    if rendered_order is None:
+        return None
+    prefs = _load_preferences()
+    merged_order = _merge_rendered_quota_card_order(
+        prefs.get("quota_card_order"), rendered_order
+    )
+    prefs["quota_card_order"] = list(merged_order)
+    _save_preferences(prefs)
+    return merged_order
+
+
+def _valid_rendered_quota_card_order(value: object) -> tuple[str, ...] | None:
+    """Validate the complete bounded card order received from panel JavaScript."""
+    if not isinstance(value, list) or len(value) != len(DEFAULT_QUOTA_CARD_ORDER):
+        return None
+    if any(
+        type(card) is not str or not card or len(card) > MAX_QUOTA_CARD_ID_LENGTH
+        for card in value
+    ):
+        return None
+    order = tuple(value)
+    if len(set(order)) != len(order) or set(order) != set(DEFAULT_QUOTA_CARD_ORDER):
+        return None
+    return order
 
 
 def _merge_rendered_quota_card_order(
@@ -99,12 +126,8 @@ def _merge_rendered_quota_card_order(
 ) -> tuple[str, ...]:
     """Reorder rendered cards without deleting future card IDs from preferences."""
     stored_order = _valid_quota_card_order(stored_value)
-    known_order = tuple(
-        card for card in rendered_order if card in DEFAULT_QUOTA_CARD_ORDER
-    )
-    if len(known_order) != len(rendered_order):
-        return rendered_order
-    if set(known_order) != set(DEFAULT_QUOTA_CARD_ORDER):
+    known_order = _valid_rendered_quota_card_order(list(rendered_order))
+    if known_order is None:
         return rendered_order
     if stored_order is None:
         return known_order

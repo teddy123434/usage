@@ -38,14 +38,12 @@ from menubar import grok as menubar_grok
 from menubar import refresh as menubar_refresh
 from menubar import state as menubar_state
 from menubar.prefs import (
-    DEFAULT_QUOTA_CARD_ORDER,
     _auto_update_check_enabled,
     _hide_agy_enabled,
     _hide_claude_enabled,
     _hide_codex_enabled,
     _hide_grok_enabled,
     _hide_openrouter_enabled,
-    _merge_rendered_quota_card_order,
     _panel_flavor,
     _prefer_ocx_enabled,
     _quota_card_order,
@@ -55,6 +53,7 @@ from menubar.prefs import (
     _save_panel_flavor,
     _save_prefer_ocx,
     _save_quota_source_mode,
+    _save_rendered_quota_card_order,
     _window_keeper_enabled,
 )
 from menubar.quota_sources import load_route_facts
@@ -269,34 +268,8 @@ window.webkit.messageHandlers.usage = {
   });
 })();
 
-// Panel assets register their card reorder handler in the bubbling phase. This
-// earlier capture listener turns their empty card area into a native drag
-// region without changing the shared macOS HTML.  Add the class only after
-// excluding controls, so pywebview never treats a button click as a window drag.
-document.addEventListener('pointerdown', function(event) {
-  var target = event.target;
-  var card = target && target.closest && target.closest(
-    '[data-card="claude"], [data-card="codex"], [data-card="agy"], '
-    + '[data-card="grok"], [data-card="openrouter"]'
-  );
-  var interactive = target && target.closest && target.closest(
-    'button, a, input, select, textarea, label, summary, [contenteditable], '
-    + '[role="button"], .codex-stale-info, .stale-info'
-  );
-  if (!card || event.button !== 0 || interactive) return;
-  card.classList.add('pywebview-drag-region', 'usage-card-window-dragging');
-  var clearDragRegion = function() {
-    card.classList.remove('pywebview-drag-region', 'usage-card-window-dragging');
-    document.removeEventListener('pointerup', clearDragRegion, true);
-    document.removeEventListener('pointercancel', clearDragRegion, true);
-  };
-  document.addEventListener('pointerup', clearDragRegion, true);
-  document.addEventListener('pointercancel', clearDragRegion, true);
-  event.stopImmediatePropagation();
-}, true);
-
-// Keep the native drag target deliberately small so it remains distinct from
-// normal panel interaction.
+// Keep the native window-drag target deliberately separate from quota cards.
+// Card pointer events must reach panel_core.js so five-card reordering works.
 document.addEventListener('DOMContentLoaded', function() {
   var handle = document.createElement('div');
   handle.className = 'usage-window-drag-handle pywebview-drag-region';
@@ -323,8 +296,7 @@ document.addEventListener('DOMContentLoaded', function() {
   background: rgba(127, 127, 127, .65);
   opacity: 1;
 }
-.usage-window-drag-handle:active,
-.usage-card-window-dragging {
+.usage-window-drag-handle:active {
   cursor: grabbing;
 }
 .usage-panel-menu-backdrop {
@@ -1874,20 +1846,16 @@ class _WindowsTrayController:
                 self._apply_content_height(payload.get("height"))
                 return None
             if action == "set_card_order":
-                order = payload.get("order")
-                if (
-                    isinstance(order, list)
-                    and all(isinstance(item, str) for item in order)
-                    and len(order) == len(DEFAULT_QUOTA_CARD_ORDER)
-                    and set(order) == set(DEFAULT_QUOTA_CARD_ORDER)
-                ):
-                    preferences = _load_preferences()
-                    preferences["quota_card_order"] = list(
-                        _merge_rendered_quota_card_order(
-                            preferences.get("quota_card_order"), tuple(order)
-                        )
-                    )
-                    _save_preferences(preferences)
+                try:
+                    order = _save_rendered_quota_card_order(payload.get("order"))
+                except Exception:
+                    if os.environ.get("USAGE_DEBUG") == "1":
+                        logger.warning("Windows card-order save failed", exc_info=True)
+                    return None
+                if order is not None:
+                    self.latest_state.card_order = order
+                    if self.visible:
+                        self.inject_state()
             elif action == "set_panel_flavor":
                 _save_panel_flavor(payload.get("flavor"))
             elif action == "switch_panel":

@@ -137,6 +137,46 @@ def test_save_quota_card_order_ignores_invalid_values(
     ]
 
 
+@pytest.mark.parametrize(
+    "value",
+    [
+        ["claude", "codex", "agy", "grok"],
+        ["claude", "codex", "agy", "grok", "openrouter", "future-card"],
+        ["claude", "codex", "agy", "grok", "grok"],
+        ["claude", "codex", "agy", "grok", "x" * 10_000],
+        ["claude", "codex", "agy", "grok", 1],
+    ],
+)
+def test_rendered_quota_card_order_rejects_untrusted_shapes(value: object) -> None:
+    assert menubar_prefs._valid_rendered_quota_card_order(value) is None
+
+
+def test_rendered_order_merge_preserves_stored_unknown_positions() -> None:
+    stored = [
+        "future-a",
+        "claude",
+        "codex",
+        "future-middle",
+        "agy",
+        "grok",
+        "openrouter",
+        "future-b",
+    ]
+
+    assert menubar_prefs._merge_rendered_quota_card_order(
+        stored, ("openrouter", "grok", "agy", "codex", "claude")
+    ) == (
+        "future-a",
+        "openrouter",
+        "grok",
+        "future-middle",
+        "agy",
+        "codex",
+        "claude",
+        "future-b",
+    )
+
+
 def test_panel_flavor_round_trip(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     preferences_file = tmp_path / "usage-preferences.json"
     monkeypatch.setattr(prefs, "PREFERENCES_FILE", preferences_file)

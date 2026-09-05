@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import json
 from datetime import UTC, datetime
 from pathlib import Path
 from types import SimpleNamespace
@@ -301,6 +302,8 @@ def test_bridge_reorders_five_cards_without_dropping_future_card_ids(
         }
     )
     bridge = UsageScriptBridge.alloc().init()
+    state = menubar._empty_state("en")
+    bridge.delegate = SimpleNamespace(latest_state=state)
 
     bridge.userContentController_didReceiveScriptMessage_(
         None,
@@ -321,6 +324,66 @@ def test_bridge_reorders_five_cards_without_dropping_future_card_ids(
         "claude",
         "future-b",
     ]
+    assert state.card_order == tuple(prefs._load_preferences()["quota_card_order"])
+
+
+@pytest.mark.parametrize(
+    "order",
+    [
+        ["claude", "codex", "agy", "grok"],
+        ["claude", "codex", "agy", "grok", "future-card"],
+        ["claude", "codex", "agy", "grok", "grok"],
+        ["claude", "codex", "agy", "grok", "openrouter"] * 1000,
+    ],
+)
+def test_bridge_rejects_untrusted_rendered_card_orders(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, order: list[str]
+) -> None:
+    preferences_file = tmp_path / "usage-preferences.json"
+    monkeypatch.setattr(prefs, "PREFERENCES_FILE", preferences_file)
+    initial_order = ["claude", "codex", "agy", "grok", "openrouter"]
+    prefs._save_preferences({"quota_card_order": initial_order})
+    bridge = UsageScriptBridge.alloc().init()
+    state = menubar._empty_state("en")
+    bridge.delegate = SimpleNamespace(latest_state=state)
+
+    bridge.userContentController_didReceiveScriptMessage_(
+        None,
+        SimpleNamespace(
+            body=lambda: json.dumps({"action": "set_card_order", "order": order})
+        ),
+    )
+
+    assert prefs._load_preferences()["quota_card_order"] == initial_order
+    assert state.card_order == tuple(initial_order)
+
+
+def test_bridge_does_not_change_state_when_rendered_order_save_fails(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import panels.web_panel as web_panel
+
+    bridge = UsageScriptBridge.alloc().init()
+    state = menubar._empty_state("en")
+    bridge.delegate = SimpleNamespace(latest_state=state)
+    monkeypatch.setattr(
+        web_panel,
+        "_save_rendered_quota_card_order",
+        lambda _order: (_ for _ in ()).throw(OSError("disk full")),
+    )
+
+    bridge.userContentController_didReceiveScriptMessage_(
+        None,
+        SimpleNamespace(
+            body=lambda: (
+                '{"action":"set_card_order","order":'
+                '["openrouter","grok","agy","codex","claude"]}'
+            )
+        ),
+    )
+
+    assert state.card_order == ("claude", "codex", "agy", "grok", "openrouter")
+
 
 def test_bridge_saves_valid_panel_flavor_and_ignores_invalid_input(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path

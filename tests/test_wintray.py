@@ -4,6 +4,8 @@
 from __future__ import annotations
 
 import json
+import shutil
+import subprocess
 import sys
 import threading
 import time
@@ -317,21 +319,106 @@ def test_panel_html_installs_webkit_shim_without_changing_asset() -> None:
     assert "overflow-y: auto" in html
     assert "event.stopImmediatePropagation()" in html
     assert "[data-card=\"claude\"]" in html
-    assert "usage-card-window-dragging" in html
-    assert "card.classList.add('pywebview-drag-region'" in html
-    assert "button, a, input, select, textarea, label, summary" in html
+    assert "[data-card=\"openrouter\"]" in html
+    assert "usage-card-window-dragging" not in html
+    assert "card.classList.add('pywebview-drag-region'" not in html
     assert "cursor: grab" in html
     assert "cursor: grabbing" in html
     assert "usageApplyStateWithDynamicHeight" in html
 
 
-def test_native_drag_region_covers_every_quota_card() -> None:
-    """The Windows shim must offer the same drag area as the shared panel core."""
-    html = wintray.panel_html("classic.html")
-    shim = html.split("Panel assets register their card reorder handler")[1]
+def test_native_drag_region_is_separate_from_quota_cards() -> None:
+    """The Windows shim must leave quota-card drags to the shared panel core."""
+    shim = wintray.JS_SHIM
 
-    for card in ("claude", "codex", "agy", "grok", "openrouter"):
-        assert f'[data-card="{card}"]' in shim
+    assert "usage-window-drag-handle pywebview-drag-region" in shim
+    assert "usage-card-window-dragging" not in shim
+
+
+def test_windows_shim_leaves_card_pointer_events_for_shared_reorder_runtime() -> None:
+    node = shutil.which("node")
+    if node is None:
+        pytest.skip("node is required for the executable panel event-flow test")
+    shim = wintray.JS_SHIM
+    assert "addEventListener('pointerdown'" not in shim
+
+    core = (
+        Path(__file__).resolve().parent.parent / "assets" / "panels" / "panel_core.js"
+    ).read_text(encoding="utf-8")
+    core = core.replace("{{I18N_BUNDLE}}", "{}")
+    harness = r"""
+const listeners = {};
+const messages = [];
+const classList = () => ({ add() {}, remove() {}, toggle() {} });
+const style = { setProperty() {}, removeProperty() {} };
+const documentRoot = { style, classList: classList() };
+let runtime = false;
+const parent = { insertBefore() {} };
+function card(id) {
+  return {
+    dataset: { card: id }, classList: classList(), offsetParent: {}, parentElement: parent,
+    setPointerCapture() {}, releasePointerCapture() {}, hasPointerCapture() { return true; },
+    getBoundingClientRect() { return { top: 0, height: 10 }; }, querySelector() { return null; },
+    closest() { return this; }
+  };
+}
+const cards = ["claude", "codex", "agy", "grok", "openrouter"].map(card);
+const project = { parentElement: parent };
+global.window = {
+  PanelHooks: {},
+  webkit: { messageHandlers: { usage: { postMessage(message) { messages.push(message); } } } }
+};
+global.getComputedStyle = () => ({ getPropertyValue() { return ""; } });
+global.document = {
+  documentElement: documentRoot,
+  head: { appendChild() {} },
+  createElement() {
+    return {
+      style, dataset: {}, classList: classList(), append() {}, appendChild() {}
+    };
+  },
+  querySelector(selector) {
+    if (!runtime) return null;
+    if (selector === '[data-card="projects"]') return project;
+    return null;
+  },
+  querySelectorAll(selector) {
+    if (!runtime) return [];
+    return selector.includes("[data-card") ? cards : [];
+  },
+  addEventListener(type, callback) { (listeners[type] ||= []).push(callback); },
+  removeEventListener() {}
+};
+function dispatch(type, event) { for (const callback of listeners[type] || []) callback(event); }
+"""
+    event_flow = r"""
+runtime = true;
+const dragged = cards[0];
+const target = {
+  closest(selector) {
+    return selector.startsWith('[data-card=') ? dragged : null;
+  }
+};
+dispatch("pointerdown", { target, button: 0, pointerId: 7, clientY: 0 });
+dispatch("pointermove", { target, pointerId: 7, clientY: 20, preventDefault() {} });
+dispatch("pointerup", { target, pointerId: 7 });
+if (messages.length !== 1) throw new Error(`expected one reorder message, got ${messages.length}`);
+const payload = JSON.parse(messages[0]);
+if (payload.action !== "set_card_order") throw new Error("missing set_card_order action");
+if (payload.order.join(",") !== "claude,codex,agy,grok,openrouter") {
+  throw new Error(`wrong order: ${payload.order}`);
+}
+"""
+
+    result = subprocess.run(
+        [node, "-e", harness + core + event_flow],
+        check=False,
+        capture_output=True,
+        text=True,
+        timeout=10,
+    )
+
+    assert result.returncode == 0, result.stderr
 
 
 def test_content_height_message_resizes_visible_panel_with_natural_height(
@@ -982,6 +1069,11 @@ def test_card_order_persists_into_the_next_loaded_panel(
         "_save_preferences",
         lambda updated: preferences.update(updated),
     )
+    monkeypatch.setattr(
+        menubar_prefs,
+        "_save_preferences",
+        lambda updated: preferences.update(updated),
+    )
     monkeypatch.setattr(controller, "_place_window", lambda: None)
 
     controller.handle_panel_message(
@@ -1015,7 +1107,15 @@ def test_windows_drag_order_accepts_five_cards_and_preserves_future_ids(
 
     monkeypatch.setattr(wintray, "_load_preferences", lambda: preferences.copy())
     monkeypatch.setattr(
+        menubar_prefs, "_load_preferences", lambda: preferences.copy()
+    )
+    monkeypatch.setattr(
         wintray,
+        "_save_preferences",
+        lambda updated: preferences.update(updated),
+    )
+    monkeypatch.setattr(
+        menubar_prefs,
         "_save_preferences",
         lambda updated: preferences.update(updated),
     )
@@ -1038,6 +1138,139 @@ def test_windows_drag_order_accepts_five_cards_and_preserves_future_ids(
         "claude",
         "future-b",
     ]
+    assert controller.latest_state.card_order == tuple(preferences["quota_card_order"])
+
+
+@pytest.mark.parametrize(
+    "order",
+    [
+        ["claude", "codex", "agy", "grok"],
+        ["claude", "codex", "agy", "grok", "future-card"],
+        ["claude", "codex", "agy", "grok", "grok"],
+        ["claude", "codex", "agy", "grok", "openrouter"] * 1000,
+    ],
+)
+def test_windows_drag_rejects_untrusted_orders_without_state_or_disk_change(
+    monkeypatch: pytest.MonkeyPatch, order: list[str]
+) -> None:
+    preferences: dict[str, object] = {
+        "quota_card_order": ["claude", "codex", "agy", "grok", "openrouter"]
+    }
+    injected: list[str] = []
+    controller = wintray._WindowsTrayController(mock=True, interval=60)
+    controller.window = SimpleNamespace(evaluate_js=injected.append)
+    controller.visible = True
+    original = controller.latest_state.card_order
+    monkeypatch.setattr(
+        menubar_prefs, "_load_preferences", lambda: preferences.copy()
+    )
+    monkeypatch.setattr(
+        menubar_prefs,
+        "_save_preferences",
+        lambda updated: preferences.update(updated),
+    )
+
+    controller.handle_panel_message(
+        json.dumps({"action": "set_card_order", "order": order})
+    )
+
+    assert preferences["quota_card_order"] == [
+        "claude",
+        "codex",
+        "agy",
+        "grok",
+        "openrouter",
+    ]
+    assert controller.latest_state.card_order == original
+    assert injected == []
+
+
+def test_windows_drag_then_hide_keeps_merged_order_in_injected_state(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    preferences: dict[str, object] = {
+        "quota_card_order": [
+            "future-a",
+            "claude",
+            "codex",
+            "agy",
+            "grok",
+            "openrouter",
+        ]
+    }
+    injected: list[str] = []
+    controller = wintray._WindowsTrayController(mock=True, interval=60)
+    controller.window = SimpleNamespace(evaluate_js=injected.append)
+    controller.visible = True
+    monkeypatch.setattr(wintray, "_load_preferences", lambda: preferences.copy())
+    monkeypatch.setattr(
+        menubar_prefs, "_load_preferences", lambda: preferences.copy()
+    )
+    monkeypatch.setattr(
+        wintray,
+        "_save_preferences",
+        lambda updated: preferences.update(updated),
+    )
+    monkeypatch.setattr(
+        menubar_prefs,
+        "_save_preferences",
+        lambda updated: preferences.update(updated),
+    )
+    monkeypatch.setattr(wintray, "_hide_claude_enabled", lambda: True)
+    monkeypatch.setattr(wintray, "_hide_codex_enabled", lambda: False)
+    monkeypatch.setattr(wintray, "_hide_agy_enabled", lambda: False)
+    monkeypatch.setattr(wintray, "_hide_grok_enabled", lambda: False)
+    monkeypatch.setattr(wintray, "_hide_openrouter_enabled", lambda: False)
+
+    controller.handle_panel_message(
+        json.dumps(
+            {
+                "action": "set_card_order",
+                "order": ["openrouter", "grok", "agy", "codex", "claude"],
+            }
+        )
+    )
+    controller.toggle_hide_section("hide_claude_section")
+
+    payload = json.loads(
+        injected[-1].removeprefix("window.usageApplyState(").removesuffix(")")
+    )
+    assert payload["cardOrder"] == [
+        "future-a",
+        "openrouter",
+        "grok",
+        "agy",
+        "codex",
+        "claude",
+    ]
+    assert payload["hideClaude"] is True
+
+
+def test_windows_drag_save_failure_keeps_state_and_skips_injection(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    injected: list[str] = []
+    controller = wintray._WindowsTrayController(mock=True, interval=60)
+    controller.window = SimpleNamespace(evaluate_js=injected.append)
+    controller.visible = True
+    original = controller.latest_state.card_order
+    monkeypatch.setattr(
+        wintray,
+        "_save_rendered_quota_card_order",
+        lambda _order: (_ for _ in ()).throw(OSError("disk full")),
+    )
+
+    controller.handle_panel_message(
+        json.dumps(
+            {
+                "action": "set_card_order",
+                "order": ["openrouter", "grok", "agy", "codex", "claude"],
+            }
+        )
+    )
+
+    assert controller.latest_state.card_order == original
+    assert injected == []
 
 
 def test_run_app_wires_pystray_and_pywebview(
