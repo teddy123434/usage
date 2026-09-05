@@ -139,6 +139,7 @@ class _PanelPlacement:
 class _RenderedPanelViewport:
     work_area: tuple[int, int, int, int]
     viewport: PanelViewport
+    generation: int
 
 
 TRAY_UNKNOWN_COLOR = (110, 118, 129, 255)
@@ -766,6 +767,7 @@ class _WindowsTrayController:
         self._window_mutations: deque[Callable[[], None]] = deque()
         self._window_mutation_lock = threading.Lock()
         self._window_mutation_scheduled = False
+        self._panel_placement_generation = 0
 
     def _empty_state(self) -> menubar_state.PopoverState:
         missing = menubar_state._missing_row
@@ -1002,7 +1004,12 @@ class _WindowsTrayController:
         left, top, right, bottom = work_area
         return (max(left + 12, right - width - 12), max(top + 12, bottom - height - 12))
 
-    def _place_window(self, *, force_default: bool = False) -> None:
+    def _place_window(
+        self,
+        *,
+        force_default: bool = False,
+        _reconcile_on_mismatch: bool = True,
+    ) -> None:
         placement = self._resolve_panel_placement(force_default=force_default)
         if placement is None:
             return
@@ -1010,14 +1017,17 @@ class _WindowsTrayController:
         if placement.viewport.scrollable and not viewport_applied:
             return
 
+        with self._window_mutation_lock:
+            self._panel_placement_generation += 1
+            generation = self._panel_placement_generation
         rendered_viewport = _RenderedPanelViewport(
-            placement.work_area,
-            placement.viewport,
+            placement.work_area, placement.viewport, generation
         )
         self._dispatch_window_mutation(
             lambda: self._place_window_on_ui_thread(
                 force_default=force_default,
                 rendered_viewport=rendered_viewport,
+                reconcile_on_mismatch=_reconcile_on_mismatch,
             )
         )
 
@@ -1050,6 +1060,7 @@ class _WindowsTrayController:
         *,
         force_default: bool = False,
         rendered_viewport: _RenderedPanelViewport | None = None,
+        reconcile_on_mismatch: bool = True,
     ) -> None:
         if self.window is None or self.stopping.is_set():
             return
@@ -1060,9 +1071,26 @@ class _WindowsTrayController:
             placement.work_area != rendered_viewport.work_area
             or placement.viewport != rendered_viewport.viewport
         ):
-            # The user moved to another monitor, or newer content arrived,
-            # before this UI callback drained. A newer placement can safely
-            # apply its matching JS mode and geometry; this stale one cannot.
+            with self._window_mutation_lock:
+                newer_placement_exists = (
+                    self._panel_placement_generation != rendered_viewport.generation
+                )
+            if (
+                reconcile_on_mismatch
+                and not newer_placement_exists
+                and not self.stopping.is_set()
+            ):
+                # WebView2 JavaScript cannot run on this WinForms callback
+                # without risking a deadlock. Reconcile once off-thread so the
+                # fresh monitor receives a matching JS mode and native cap.
+                threading.Thread(
+                    target=self._place_window,
+                    kwargs={
+                        "force_default": force_default,
+                        "_reconcile_on_mismatch": False,
+                    },
+                    daemon=True,
+                ).start()
             return
         viewport = (
             rendered_viewport.viewport

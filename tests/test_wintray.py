@@ -598,7 +598,9 @@ def test_content_height_message_resizes_visible_panel_with_natural_height(
     monkeypatch.setattr(
         controller,
         "_place_window_on_ui_thread",
-        lambda *, force_default, rendered_viewport: calls.append("place"),
+        lambda *, force_default, rendered_viewport, reconcile_on_mismatch: calls.append(
+            "place"
+        ),
     )
 
     controller.handle_panel_message(
@@ -908,6 +910,61 @@ def test_delayed_ui_placement_uses_fresh_anchor_with_same_target_viewport(
 
     assert "usageApplyPanelViewport(true)" in javascript[-1]
     assert mutations == [("resize", 380, 776), ("move", 1400, 12)]
+
+
+def test_delayed_cross_monitor_drag_reconciles_scroll_mode_without_new_event(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    scheduled_drains: list[Callable[[], None]] = []
+    javascript: list[str] = []
+    mutations: list[tuple[str, int, int]] = []
+    reconciled = threading.Event()
+
+    def evaluate_js(code: str) -> bool:
+        javascript.append(code)
+        if len(javascript) == 2:
+            reconciled.set()
+        return True
+
+    native = SimpleNamespace(
+        InvokeRequired=True,
+        BeginInvoke=lambda callback: scheduled_drains.append(callback),
+    )
+    window = SimpleNamespace(
+        native=native,
+        x=1200,
+        y=100,
+        evaluate_js=evaluate_js,
+        resize=lambda width, height: mutations.append(("resize", width, height)),
+        move=lambda x, y: mutations.append(("move", x, y)),
+    )
+    controller = wintray._WindowsTrayController(mock=True, interval=60)
+    controller.window = window
+    controller._content_height = 1000
+    controller._positioned_this_show = True
+    primary = (0, 0, 1000, 1200)
+    secondary = (1000, 0, 2000, 800)
+    monkeypatch.setitem(sys.modules, "System", SimpleNamespace(Action=lambda callback: callback))
+    monkeypatch.setattr(controller, "_working_area", lambda: primary)
+    monkeypatch.setattr(
+        controller,
+        "_work_area_for_point",
+        lambda point: secondary if point is not None and point[0] >= 1000 else primary,
+    )
+
+    worker = threading.Thread(target=controller._place_window)
+    worker.start()
+    worker.join()
+    window.x, window.y = 100, 100
+    scheduled_drains.pop(0)()
+    assert reconciled.wait(2)
+    while scheduled_drains:
+        scheduled_drains.pop(0)()
+
+    assert "usageApplyPanelViewport(true)" in javascript[0]
+    assert "usageApplyPanelViewport(false)" in javascript[1]
+    assert len(javascript) == 2
+    assert mutations == [("resize", 380, 1000), ("move", 100, 100)]
 
 
 def test_load_preferences_non_utf8(
