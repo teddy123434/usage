@@ -58,7 +58,7 @@ from menubar.prefs import (
 )
 from menubar.quota_sources import load_route_facts
 from panels.dynamic_height import clamp_content_height, inject_content_height_script
-from panels.panel_scale import fit_panel_viewport
+from panels.panel_scale import PanelViewport, fit_panel_viewport
 from panels.payload import _load_panel_html, _state_payload
 from prefs import _load_preferences, _save_preferences
 from pricing import calculate_cost
@@ -126,6 +126,14 @@ PANEL_HEIGHTS = {
     "origami": 1132,
     "catppuccin": 1166,
 }
+
+
+@dataclass(frozen=True, slots=True)
+class _PanelPlacement:
+    work_area: tuple[int, int, int, int]
+    anchor: tuple[int, int] | None
+    viewport: PanelViewport
+
 
 TRAY_UNKNOWN_COLOR = (110, 118, 129, 255)
 TRAY_NORMAL_COLOR = (244, 145, 100, 255)
@@ -989,30 +997,21 @@ class _WindowsTrayController:
         return (max(left + 12, right - width - 12), max(top + 12, bottom - height - 12))
 
     def _place_window(self, *, force_default: bool = False) -> None:
-        current_position = self._current_window_position()
-        work_area = self._work_area_for_point(current_position) or self._working_area()
-        maximum = (
-            float(work_area[3] - work_area[1] - 24)
-            if work_area is not None
-            else float(PANEL_HEIGHTS[self.active_panel_id])
-        )
-        viewport = fit_panel_viewport(PANEL_WIDTH, self.panel_height(), maximum)
-        viewport_applied = self._apply_panel_viewport(viewport.scrollable)
-        if viewport.scrollable and not viewport_applied:
+        placement = self._resolve_panel_placement(force_default=force_default)
+        if placement is None:
             return
-        if force_default:
-            self._dispatch_window_mutation(
-                lambda: self._place_window_on_ui_thread(force_default=True)
-            )
-        else:
-            self._dispatch_window_mutation(self._place_window_on_ui_thread)
+        viewport_applied = self._apply_panel_viewport(placement.viewport.scrollable)
+        if placement.viewport.scrollable and not viewport_applied:
+            return
 
-    def _place_window_on_ui_thread(self, *, force_default: bool = False) -> None:
-        if self.window is None or self.stopping.is_set():
-            return
+        self._dispatch_window_mutation(
+            lambda: self._place_window_on_ui_thread(placement=placement)
+        )
+
+    def _resolve_panel_placement(self, *, force_default: bool = False) -> _PanelPlacement | None:
         primary_work_area = self._working_area()
         if primary_work_area is None:
-            return
+            return None
 
         # Resolve the *target* anchor point before picking a work area, then
         # look up the work area of whichever monitor that point is on. The
@@ -1030,15 +1029,31 @@ class _WindowsTrayController:
         work_area = self._work_area_for_point(anchor) or primary_work_area
         left, top, right, bottom = work_area
         maximum = float(bottom - top - 24)
-        natural_height = self.panel_height()
-        viewport = fit_panel_viewport(PANEL_WIDTH, natural_height, maximum)
-        width = int(round(viewport.width))
-        height = int(round(viewport.height))
+        viewport = fit_panel_viewport(PANEL_WIDTH, self.panel_height(), maximum)
+        return _PanelPlacement(work_area, anchor, viewport)
+
+    def _place_window_on_ui_thread(
+        self,
+        *,
+        force_default: bool = False,
+        placement: _PanelPlacement | None = None,
+    ) -> None:
+        if self.window is None or self.stopping.is_set():
+            return
+        placement = placement or self._resolve_panel_placement(force_default=force_default)
+        if placement is None:
+            return
+        width = int(round(placement.viewport.width))
+        height = int(round(placement.viewport.height))
         self.window.resize(width, height)
-        position = anchor if anchor is not None else self._default_window_position(
-            work_area, width, height
+        position = (
+            placement.anchor
+            if placement.anchor is not None
+            else self._default_window_position(placement.work_area, width, height)
         )
-        self.window.move(*self._clamp_window_position(position, work_area, width, height))
+        self.window.move(
+            *self._clamp_window_position(position, placement.work_area, width, height)
+        )
         self._positioned_this_show = True
 
     def _dispatch_window_mutation(self, mutation: Callable[[], None]) -> None:

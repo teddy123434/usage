@@ -595,7 +595,11 @@ def test_content_height_message_resizes_visible_panel_with_natural_height(
     monkeypatch.setattr(
         controller, "_work_area_for_point", lambda _point: (0, 0, 1000, 800)
     )
-    monkeypatch.setattr(controller, "_place_window_on_ui_thread", lambda: calls.append("place"))
+    monkeypatch.setattr(
+        controller,
+        "_place_window_on_ui_thread",
+        lambda *, placement: calls.append("place"),
+    )
 
     controller.handle_panel_message(
         json.dumps({"action": "content_height", "height": 510.4})
@@ -756,6 +760,69 @@ def test_failed_panel_viewport_does_not_resize_tall_window(
     controller._place_window()
 
     assert mutations == [("resize", 380, 776), ("move", 608, 12)]
+
+
+def test_first_show_uses_saved_short_monitor_for_scroll_mode(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    javascript: list[str] = []
+    mutations: list[tuple[str, int, int]] = []
+    window = SimpleNamespace(
+        x=100,
+        y=100,
+        evaluate_js=lambda code: javascript.append(code) or True,
+        resize=lambda width, height: mutations.append(("resize", width, height)),
+        move=lambda x, y: mutations.append(("move", x, y)),
+    )
+    controller = wintray._WindowsTrayController(mock=True, interval=60)
+    controller.window = window
+    controller._content_height = 1000
+    controller._positioned_this_show = False
+    primary = (0, 0, 1000, 1200)
+    secondary = (1000, 0, 2000, 800)
+    monkeypatch.setattr(controller, "_working_area", lambda: primary)
+    monkeypatch.setattr(
+        controller,
+        "_work_area_for_point",
+        lambda point: secondary if point is not None and point[0] >= 1000 else primary,
+    )
+    monkeypatch.setattr(controller, "_saved_window_position", lambda: (1200, 100))
+
+    controller._place_window()
+
+    assert "usageApplyPanelViewport(true)" in javascript[-1]
+    assert mutations == [("resize", 380, 776), ("move", 1200, 12)]
+
+
+def test_forced_reset_uses_tall_primary_monitor_for_scroll_mode(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    javascript: list[str] = []
+    mutations: list[tuple[str, int, int]] = []
+    window = SimpleNamespace(
+        x=1200,
+        y=100,
+        evaluate_js=lambda code: javascript.append(code) or True,
+        resize=lambda width, height: mutations.append(("resize", width, height)),
+        move=lambda x, y: mutations.append(("move", x, y)),
+    )
+    controller = wintray._WindowsTrayController(mock=True, interval=60)
+    controller.window = window
+    controller._content_height = 1000
+    controller._positioned_this_show = True
+    primary = (0, 0, 1000, 1200)
+    secondary = (1000, 0, 2000, 800)
+    monkeypatch.setattr(controller, "_working_area", lambda: primary)
+    monkeypatch.setattr(
+        controller,
+        "_work_area_for_point",
+        lambda point: secondary if point is not None and point[0] >= 1000 else primary,
+    )
+
+    controller._place_window(force_default=True)
+
+    assert "usageApplyPanelViewport(false)" in javascript[-1]
+    assert mutations == [("resize", 380, 1000), ("move", 608, 188)]
 
 
 def test_background_window_mutation_is_dispatched_to_ui_thread(

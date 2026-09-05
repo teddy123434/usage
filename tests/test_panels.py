@@ -324,13 +324,24 @@ def test_shared_viewport_preserves_and_clamps_scroll_after_content_changes() -> 
     harness = f"""
 const frames = [];
 const scrollCalls = [];
+const eventTypes = [];
 const style = {{}};
-const body = {{ style: {{ height: "4000px" }} }};
-const root = {{ style, scrollHeight: 1400, clientHeight: 500 }};
+const theme = {{ viewportHeight: 500, naturalHeight: 1400 }};
+const footer = {{ bottom: 1400 }};
+const body = {{ style: {{ height: "", minHeight: "", overflow: "" }} }};
+const root = {{
+  style,
+  clientHeight: theme.viewportHeight,
+  get scrollHeight() {{
+    const naturalFlow = body.style.height === "auto" && body.style.overflow === "visible";
+    return naturalFlow ? theme.naturalHeight : theme.viewportHeight;
+  }}
+}};
 global.document = {{
   documentElement: root,
   body,
   querySelector() {{ return null; }},
+  addEventListener(type) {{ eventTypes.push(type); }},
   fonts: null
 }};
 global.MutationObserver = undefined;
@@ -345,14 +356,23 @@ eval({json.dumps(script)});
 while (frames.length) frames.shift()();
 window.usageApplyPanelViewport(true);
 frames.shift()();
-root.scrollHeight = 620;
+const tallScrollHeight = root.scrollHeight;
+const footerReachable = tallScrollHeight >= footer.bottom;
+theme.naturalHeight = 620;
 window.scrollY = 700;
 window.usageApplyPanelViewport(true);
 frames.shift()();
 window.scrollY = 120;
 window.usageApplyPanelViewport(false);
 frames.shift()();
-console.log(JSON.stringify({{ style, bodyHeight: body.style.height, scrollCalls }}));
+console.log(JSON.stringify({{
+  style,
+  bodyStyle: body.style,
+  tallScrollHeight,
+  footerReachable,
+  inputEventsUnblocked: !eventTypes.includes("wheel") && !eventTypes.includes("keydown"),
+  scrollCalls
+}}));
 """
     result = subprocess.run(
         [node, "-e", harness],
@@ -371,8 +391,11 @@ console.log(JSON.stringify({{ style, bodyHeight: body.style.height, scrollCalls 
             "overflowY": "hidden",
             "scrollbarGutter": "auto",
         },
-        "bodyHeight": "",
-        "scrollCalls": [[0, 700], [0, 120], [0, 120]],
+        "bodyStyle": {"height": "", "minHeight": "", "overflow": ""},
+        "tallScrollHeight": 1400,
+        "footerReachable": True,
+        "inputEventsUnblocked": True,
+        "scrollCalls": [[0, 700], [0, 120], [0, 0]],
     }
 
 

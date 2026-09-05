@@ -146,7 +146,10 @@ CONTENT_HEIGHT_SCRIPT = """
     root.style.overflowX = "hidden";
     root.style.overflowY = scrollable ? "auto" : "hidden";
     root.style.scrollbarGutter = "auto";
-    if (body) body.style.height = "";
+    if (body) {
+      body.style.height = scrollable ? "auto" : "";
+      body.style.overflow = scrollable ? "visible" : "";
+    }
     requestAnimationFrame(() => {
       const maxY = Math.max(0, root.scrollHeight - root.clientHeight);
       window.scrollTo(0, Math.min(y, maxY));
