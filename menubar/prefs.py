@@ -108,7 +108,7 @@ def _quota_notifications_enabled(prefs: Mapping[str, object] | None = None) -> b
 def _quota_source_mode(
     provider: object, prefs: Mapping[str, object] | None = None
 ) -> SourceMode:
-    if provider not in DUAL_SOURCE_PROVIDERS:
+    if not isinstance(provider, str) or provider not in DUAL_SOURCE_PROVIDERS:
         return "auto"
     data = _resolved_preferences(prefs)
     modes = data.get("quota_source_modes")
@@ -121,7 +121,12 @@ def _quota_source_mode(
 
 
 def _save_quota_source_mode(provider: object, mode: object) -> bool:
-    if provider not in DUAL_SOURCE_PROVIDERS or mode not in SOURCE_MODES:
+    if (
+        not isinstance(provider, str)
+        or not isinstance(mode, str)
+        or provider not in DUAL_SOURCE_PROVIDERS
+        or mode not in SOURCE_MODES
+    ):
         return False
     preferences = _load_preferences()
     modes = _valid_choice_mapping(preferences.get("quota_source_modes"), SOURCE_MODES)
@@ -134,7 +139,7 @@ def _save_quota_source_mode(provider: object, mode: object) -> bool:
 def _quota_last_source(
     provider: object, prefs: Mapping[str, object] | None = None
 ) -> QuotaSource | None:
-    if provider not in DUAL_SOURCE_PROVIDERS:
+    if not isinstance(provider, str) or provider not in DUAL_SOURCE_PROVIDERS:
         return None
     data = _resolved_preferences(prefs)
     sources = data.get("quota_last_sources")
@@ -146,7 +151,12 @@ def _quota_last_source(
 
 
 def _save_quota_last_source(provider: object, source: object) -> bool:
-    if provider not in DUAL_SOURCE_PROVIDERS or source not in {"native", "ocx"}:
+    if (
+        not isinstance(provider, str)
+        or not isinstance(source, str)
+        or provider not in DUAL_SOURCE_PROVIDERS
+        or source not in {"native", "ocx"}
+    ):
         return False
     preferences = _load_preferences()
     sources = _valid_choice_mapping(

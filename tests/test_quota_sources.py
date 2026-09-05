@@ -293,3 +293,45 @@ def test_antigravity_route_is_always_ambiguous() -> None:
             "ANTHROPIC_AUTH_TOKEN": "opencodex-proxy",
         },
     ) is False
+
+
+@pytest.mark.parametrize(
+    "base_url",
+    [
+        "http://127.0.0.1:not-a-port/v1",
+        "http://127.0.0.1:70000/v1",
+        "http://[::1/v1",
+        "http://user@127.0.0.1:11500/v1",
+        "http://user:password@localhost:11500/v1",
+    ],
+)
+def test_route_rejects_malformed_or_credentialed_loopback_authority(
+    base_url: str,
+) -> None:
+    assert proven_ocx_route(
+        "codex",
+        route={
+            "ocx_owned_marker": True,
+            "provider": "opencodex",
+            "base_url": base_url,
+        },
+    ) is False
+
+
+@pytest.mark.parametrize(
+    "base_url",
+    [
+        "http://127.0.0.1:11500/v1",
+        "http://localhost:11500/v1",
+        "http://[::1]:11500/v1",
+    ],
+)
+def test_route_accepts_well_formed_loopback_authority(base_url: str) -> None:
+    assert proven_ocx_route(
+        "codex",
+        route={
+            "ocx_owned_marker": True,
+            "provider": "opencodex",
+            "base_url": base_url,
+        },
+    ) is True

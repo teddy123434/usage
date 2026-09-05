@@ -117,6 +117,12 @@ def _is_loopback_url(value: object) -> bool:
         return False
     try:
         parsed = urlsplit(value)
+        # Accessing ``port`` performs urllib's deferred numeric/range validation.
+        # Userinfo has no place in an OCX-owned local endpoint and accepting it
+        # would make a visually deceptive authority count as route proof.
+        _ = parsed.port
+        if parsed.username is not None or parsed.password is not None:
+            return False
         hostname = parsed.hostname
         if parsed.scheme not in {"http", "https"} or hostname is None:
             return False

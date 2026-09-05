@@ -204,3 +204,52 @@ def test_prefer_ocx_is_strict_boolean_and_defaults_false() -> None:
     assert menubar_prefs._prefer_ocx_enabled({}) is False
     assert menubar_prefs._prefer_ocx_enabled({"prefer_ocx": True}) is True
     assert menubar_prefs._prefer_ocx_enabled({"prefer_ocx": 1}) is False
+
+
+class _EqualToEveryString:
+    def __eq__(self, other: object) -> bool:
+        return isinstance(other, str)
+
+    def __hash__(self) -> int:
+        return 0
+
+
+def test_source_preference_writers_reject_non_string_equality_objects(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    preferences_file = tmp_path / "usage-preferences.json"
+    monkeypatch.setattr(prefs, "PREFERENCES_FILE", preferences_file)
+    impostor = _EqualToEveryString()
+
+    assert menubar_prefs._save_quota_source_mode(impostor, "ocx") is False
+    assert menubar_prefs._save_quota_source_mode("codex", impostor) is False
+    assert menubar_prefs._save_quota_last_source(impostor, "ocx") is False
+    assert menubar_prefs._save_quota_last_source("codex", impostor) is False
+    assert preferences_file.exists() is False
+
+
+def test_source_preference_writers_preserve_unknown_string_provider_keys(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    preferences_file = tmp_path / "usage-preferences.json"
+    monkeypatch.setattr(prefs, "PREFERENCES_FILE", preferences_file)
+    prefs._save_preferences(
+        {
+            "quota_source_modes": {"future-provider": "ocx"},
+            "quota_last_sources": {"future-provider": "native"},
+        }
+    )
+
+    assert menubar_prefs._save_quota_source_mode("codex", "native") is True
+    assert menubar_prefs._save_quota_last_source("codex", "ocx") is True
+    saved = prefs._load_preferences()
+    assert saved["quota_source_modes"] == {
+        "future-provider": "ocx",
+        "codex": "native",
+    }
+    assert saved["quota_last_sources"] == {
+        "future-provider": "native",
+        "codex": "ocx",
+    }
+    assert menubar_prefs._quota_source_mode("future-provider", saved) == "auto"
+    assert menubar_prefs._quota_last_source("future-provider", saved) is None
