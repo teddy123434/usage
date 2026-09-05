@@ -8,12 +8,41 @@
 
 from __future__ import annotations
 
+import contextlib
+import json
 import math
+import os
+import shutil
+import subprocess
+import tempfile
+import threading
+import time
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
+from pathlib import Path
 from types import MappingProxyType
-from typing import Literal, cast
+from typing import IO, Literal, cast
+
+from loaders import cache_quarantine
+
+OCX_CACHE_PATH = Path.home() / ".usage" / "ocx-quota.json"
+OCX_EXECUTABLE_PATH: Path | None = None
+MAX_OUTPUT_BYTES = 1024 * 1024
+CACHED_READ_TIMEOUT_S = 2.0
+FORCED_REFRESH_TIMEOUT_S = 20.0
+FORCED_REFRESH_INTERVAL_S = 300.0
+
+_CACHE_SCHEMA_VERSION = 1
+_FRESH_FOR = timedelta(minutes=10)
+_STALE_FOR = timedelta(hours=24)
+_RUN_CONDITION = threading.Condition()
+_run_in_flight = False
+_last_forced_started: float | None = None
+
+
+class OcxCommandError(RuntimeError):
+    """An OCX subprocess failed without exposing command output."""
 
 type LogicalProvider = Literal["claude", "codex", "antigravity", "grok", "openrouter"]
 type QuotaSource = Literal["native", "ocx"]
@@ -76,6 +105,508 @@ class OcxQuotaSnapshot:
     providers: Mapping[LogicalProvider, NormalizedQuotaSnapshot]
     generated_at: datetime
     cache_written_at: datetime
+
+
+def load_ocx_quota(*, request_refresh: bool = False) -> OcxQuotaSnapshot:
+    """Load a normalized OCX quota snapshot without exposing OCX credentials."""
+    if request_refresh:
+        request_ocx_refresh()
+        return _read_cache() or _empty_snapshot()
+
+    with _RUN_CONDITION:
+        global _run_in_flight
+        if _run_in_flight:
+            _RUN_CONDITION.wait_for(lambda: not _run_in_flight)
+            return _read_cache() or _empty_snapshot()
+        _run_in_flight = True
+
+    try:
+        return _refresh_cache(force=False) or _read_cache() or _empty_snapshot()
+    finally:
+        with _RUN_CONDITION:
+            _run_in_flight = False
+            _RUN_CONDITION.notify_all()
+
+
+def request_ocx_refresh() -> None:
+    """Start one rate-limited forced refresh in a daemon thread and return."""
+    now = time.monotonic()
+    with _RUN_CONDITION:
+        global _run_in_flight, _last_forced_started
+        if _run_in_flight:
+            return
+        if (
+            _last_forced_started is not None
+            and now - _last_forced_started < FORCED_REFRESH_INTERVAL_S
+        ):
+            return
+        _run_in_flight = True
+        _last_forced_started = now
+
+    try:
+        thread = threading.Thread(
+            target=_forced_refresh_worker,
+            name="usage-ocx-refresh",
+            daemon=True,
+        )
+        thread.start()
+    except BaseException:
+        with _RUN_CONDITION:
+            _run_in_flight = False
+            _RUN_CONDITION.notify_all()
+        raise
+
+
+def _forced_refresh_worker() -> None:
+    try:
+        _refresh_cache(force=True)
+    finally:
+        with _RUN_CONDITION:
+            global _run_in_flight
+            _run_in_flight = False
+            _RUN_CONDITION.notify_all()
+
+
+def _refresh_cache(*, force: bool) -> OcxQuotaSnapshot | None:
+    try:
+        output = _invoke_ocx(
+            force=force,
+            timeout=FORCED_REFRESH_TIMEOUT_S if force else CACHED_READ_TIMEOUT_S,
+        )
+        payload = json.loads(output.decode("utf-8"))
+        snapshot = parse_ocx_quota_payload(payload, _utcnow())
+        _write_cache(snapshot)
+        return snapshot
+    except (OcxCommandError, OSError, UnicodeDecodeError, json.JSONDecodeError, ValueError):
+        return None
+
+
+def _resolve_ocx_executable(explicit_path: Path | None = None) -> Path:
+    candidate = explicit_path if explicit_path is not None else OCX_EXECUTABLE_PATH
+    if candidate is not None:
+        resolved = candidate.expanduser()
+        if resolved.is_file() and os.access(resolved, os.X_OK):
+            return resolved
+        raise OcxCommandError("configured OCX executable is unavailable")
+    discovered = shutil.which("ocx")
+    if discovered is None:
+        raise OcxCommandError("OCX executable is unavailable")
+    return Path(discovered)
+
+
+def _invoke_ocx(*, force: bool, timeout: float) -> bytes:
+    return _run_ocx_command(_resolve_ocx_executable(), force=force, timeout=timeout)
+
+
+def _run_ocx_command(executable: Path, *, force: bool, timeout: float) -> bytes:
+    argv = (
+        (str(executable), "provider", "quota", "--refresh", "--json")
+        if force
+        else (str(executable), "provider", "quota", "--json")
+    )
+    try:
+        process = subprocess.Popen(  # noqa: S603 - executable is resolved, argv is fixed
+            argv,
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            shell=False,
+        )
+    except OSError as exc:
+        raise OcxCommandError("failed to start OCX") from exc
+    if process.stdout is None or process.stderr is None:
+        _stop_process(process)
+        raise OcxCommandError("failed to capture OCX output")
+
+    exceeded = threading.Event()
+    stdout_parts: list[bytes] = []
+    stderr_parts: list[bytes] = []
+    readers = (
+        threading.Thread(
+            target=_read_bounded_stream,
+            args=(process.stdout, stdout_parts, exceeded),
+            daemon=True,
+        ),
+        threading.Thread(
+            target=_read_bounded_stream,
+            args=(process.stderr, stderr_parts, exceeded),
+            daemon=True,
+        ),
+    )
+    for reader in readers:
+        reader.start()
+
+    deadline = time.monotonic() + timeout
+    try:
+        while process.poll() is None:
+            if exceeded.is_set():
+                raise OcxCommandError("OCX output exceeded the accepted size")
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise OcxCommandError("OCX command timed out")
+            exceeded.wait(min(0.01, remaining))
+        for reader in readers:
+            reader.join(timeout=0.5)
+        if any(reader.is_alive() for reader in readers):
+            raise OcxCommandError("OCX output streams did not close")
+        if exceeded.is_set():
+            raise OcxCommandError("OCX output exceeded the accepted size")
+        if process.returncode != 0:
+            raise OcxCommandError("OCX command failed")
+        return b"".join(stdout_parts)
+    except BaseException:
+        _stop_process(process)
+        for reader in readers:
+            reader.join(timeout=0.5)
+        raise
+    finally:
+        process.stdout.close()
+        process.stderr.close()
+
+
+def _read_bounded_stream(stream: IO[bytes], parts: list[bytes], exceeded: threading.Event) -> None:
+    total = 0
+    while not exceeded.is_set():
+        chunk = stream.read(min(64 * 1024, MAX_OUTPUT_BYTES - total + 1))
+        if not chunk:
+            return
+        total += len(chunk)
+        if total > MAX_OUTPUT_BYTES:
+            exceeded.set()
+            return
+        parts.append(chunk)
+
+
+def _stop_process(process: subprocess.Popen[bytes]) -> None:
+    if process.poll() is not None:
+        with contextlib.suppress(OSError):
+            process.wait(timeout=0.5)
+        return
+    with contextlib.suppress(OSError):
+        process.terminate()
+    try:
+        process.wait(timeout=0.5)
+    except (OSError, subprocess.TimeoutExpired):
+        with contextlib.suppress(OSError):
+            process.kill()
+        with contextlib.suppress(OSError, subprocess.TimeoutExpired):
+            process.wait(timeout=0.5)
+
+
+def _write_cache(snapshot: OcxQuotaSnapshot) -> None:
+    payload = _serialize_cache(snapshot)
+    encoded = json.dumps(
+        payload,
+        ensure_ascii=False,
+        separators=(",", ":"),
+        sort_keys=True,
+    ).encode()
+    path = OCX_CACHE_PATH
+    tmp_path: str | None = None
+    try:
+        path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+        fd, tmp_path = tempfile.mkstemp(prefix=f".{path.name}.", suffix=".tmp", dir=path.parent)
+        os.fchmod(fd, 0o600)
+        with os.fdopen(fd, "wb") as file:
+            file.write(encoded)
+            file.flush()
+            os.fsync(file.fileno())
+        os.replace(tmp_path, path)
+        tmp_path = None
+        path.chmod(0o600)
+        _fsync_directory(path.parent)
+    finally:
+        if tmp_path is not None:
+            with contextlib.suppress(OSError):
+                os.unlink(tmp_path)
+
+
+def _fsync_directory(path: Path) -> None:
+    flags = os.O_RDONLY | getattr(os, "O_DIRECTORY", 0)
+    try:
+        fd = os.open(path, flags)
+    except OSError:
+        return
+    try:
+        os.fsync(fd)
+    except OSError:
+        pass
+    finally:
+        os.close(fd)
+
+
+def _read_cache() -> OcxQuotaSnapshot | None:
+    path = OCX_CACHE_PATH
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+        if not isinstance(payload, dict):
+            raise ValueError("cache is not an object")
+        if payload.get("schema_version") != _CACHE_SCHEMA_VERSION:
+            return None
+        snapshot = _deserialize_cache(payload)
+    except FileNotFoundError:
+        return None
+    except (
+        OSError,
+        UnicodeDecodeError,
+        json.JSONDecodeError,
+        OverflowError,
+        TypeError,
+        ValueError,
+        KeyError,
+    ):
+        cache_quarantine.quarantine(path, "invalid-ocx-quota")
+        with contextlib.suppress(OSError):
+            path.unlink()
+        return None
+    return _apply_cache_age(snapshot, _utcnow())
+
+
+def _serialize_cache(snapshot: OcxQuotaSnapshot) -> dict[str, object]:
+    return {
+        "schema_version": _CACHE_SCHEMA_VERSION,
+        "generated_at": _milliseconds(snapshot.generated_at),
+        "cache_written_at": _milliseconds(snapshot.cache_written_at),
+        "providers": {
+            provider: _serialize_provider(value) for provider, value in snapshot.providers.items()
+        },
+    }
+
+
+def _serialize_provider(snapshot: NormalizedQuotaSnapshot) -> dict[str, object]:
+    return {
+        "source": snapshot.source,
+        "source_label": snapshot.source_label,
+        "windows": [
+            {
+                "label": window.label,
+                "percent": window.percent,
+                "reset_at": _milliseconds(window.reset_at) if window.reset_at else None,
+            }
+            for window in snapshot.windows
+        ],
+        "account_credits_usd": (
+            {
+                "total_credits": snapshot.account_credits_usd.total_credits,
+                "total_usage": snapshot.account_credits_usd.total_usage,
+                "remaining": snapshot.account_credits_usd.remaining,
+            }
+            if snapshot.account_credits_usd
+            else None
+        ),
+        "key_budget_usd": (
+            {
+                "used": snapshot.key_budget_usd.used,
+                "limit": snapshot.key_budget_usd.limit,
+                "remaining": snapshot.key_budget_usd.remaining,
+                "percent": snapshot.key_budget_usd.percent,
+                "expires_at": (
+                    _milliseconds(snapshot.key_budget_usd.expires_at)
+                    if snapshot.key_budget_usd.expires_at
+                    else None
+                ),
+                "unlimited": snapshot.key_budget_usd.unlimited,
+                "reset_at": (
+                    _milliseconds(snapshot.key_budget_usd.reset_at)
+                    if snapshot.key_budget_usd.reset_at
+                    else None
+                ),
+                "reset_interval": snapshot.key_budget_usd.reset_interval,
+            }
+            if snapshot.key_budget_usd
+            else None
+        ),
+        "updated_at": _milliseconds(snapshot.updated_at),
+        "freshness": snapshot.freshness,
+        "provenance": snapshot.provenance,
+        "details": _serialize_detail(snapshot.details),
+    }
+
+
+def _serialize_detail(value: object) -> object:
+    if isinstance(value, datetime):
+        return _milliseconds(value)
+    if isinstance(value, Mapping):
+        return {str(key): _serialize_detail(item) for key, item in value.items()}
+    if isinstance(value, tuple):
+        return [_serialize_detail(item) for item in value]
+    if value is None or isinstance(value, str | bool | int | float):
+        return value
+    raise TypeError("unsupported normalized cache value")
+
+
+def _deserialize_cache(payload: dict[str, object]) -> OcxQuotaSnapshot:
+    providers_raw = payload["providers"]
+    if not isinstance(providers_raw, dict):
+        raise ValueError("providers must be an object")
+    providers: dict[LogicalProvider, NormalizedQuotaSnapshot] = {}
+    for provider, value in providers_raw.items():
+        if provider not in _PROVIDER_MAP.values() or not isinstance(value, dict):
+            raise ValueError("invalid cached provider")
+        logical = cast(LogicalProvider, provider)
+        providers[logical] = _deserialize_provider(logical, value)
+    return OcxQuotaSnapshot(
+        providers=MappingProxyType(providers),
+        generated_at=_timestamp(payload["generated_at"]),
+        cache_written_at=_timestamp(payload["cache_written_at"]),
+    )
+
+
+def _deserialize_provider(
+    provider: LogicalProvider, value: dict[object, object]
+) -> NormalizedQuotaSnapshot:
+    if value.get("source") != "ocx" or value.get("source_label") != "OCX":
+        raise ValueError("invalid cached source")
+    windows_raw = value.get("windows")
+    if not isinstance(windows_raw, list):
+        raise ValueError("invalid cached windows")
+    windows: list[NormalizedQuotaWindow] = []
+    for window in windows_raw:
+        if not isinstance(window, dict):
+            raise ValueError("invalid cached window")
+        label = window.get("label")
+        if not isinstance(label, str) or not label or len(label) > 160:
+            raise ValueError("invalid cached window label")
+        reset_raw = window.get("reset_at")
+        windows.append(
+            NormalizedQuotaWindow(
+                label=label,
+                percent=_percent(window.get("percent")),
+                reset_at=_timestamp(reset_raw) if reset_raw is not None else None,
+            )
+        )
+    account = _deserialize_account_credits(value.get("account_credits_usd"))
+    key_budget = _deserialize_key_budget(value.get("key_budget_usd"))
+    freshness = value.get("freshness")
+    if freshness not in ("fresh", "stale", "unavailable", "reauth_required"):
+        raise ValueError("invalid cached freshness")
+    provenance = value.get("provenance")
+    if provenance is not None and not isinstance(provenance, str):
+        raise ValueError("invalid cached provenance")
+    details_raw = value.get("details")
+    if not isinstance(details_raw, dict):
+        raise ValueError("invalid cached details")
+    details: Mapping[str, object] = _empty()
+    if details_raw:
+        if provider != "codex" or set(details_raw) != {"aggregation"}:
+            raise ValueError("invalid cached details")
+        details = MappingProxyType(
+            {"aggregation": _openai_aggregation(details_raw["aggregation"])}
+        )
+    return NormalizedQuotaSnapshot(
+        provider=provider,
+        source="ocx",
+        source_label="OCX",
+        windows=tuple(windows),
+        account_credits_usd=account,
+        key_budget_usd=key_budget,
+        updated_at=_timestamp(value.get("updated_at")),
+        freshness=freshness,
+        provenance=provenance,
+        details=details,
+    )
+
+
+def _deserialize_account_credits(value: object) -> AccountCreditsUsd | None:
+    if value is None:
+        return None
+    if not isinstance(value, dict):
+        raise ValueError("invalid cached account credits")
+    return AccountCreditsUsd(
+        total_credits=_number(value.get("total_credits"), minimum=0),
+        total_usage=_number(value.get("total_usage"), minimum=0),
+        remaining=_number(value.get("remaining")),
+    )
+
+
+def _deserialize_key_budget(value: object) -> KeyBudgetUsd | None:
+    if value is None:
+        return None
+    if not isinstance(value, dict):
+        raise ValueError("invalid cached key budget")
+    unlimited = value.get("unlimited")
+    interval = value.get("reset_interval")
+    if not isinstance(unlimited, bool):
+        raise ValueError("invalid cached unlimited flag")
+    if interval is not None and interval not in ("daily", "weekly", "monthly", "none"):
+        raise ValueError("invalid cached reset interval")
+    expires_at = value.get("expires_at")
+    reset_at = value.get("reset_at")
+    return KeyBudgetUsd(
+        used=_number(value.get("used"), minimum=0),
+        limit=_number(value.get("limit"), minimum=0),
+        remaining=_number(value.get("remaining"), minimum=0),
+        percent=_percent(value.get("percent")),
+        expires_at=_timestamp(expires_at) if expires_at is not None else None,
+        unlimited=unlimited,
+        reset_at=_timestamp(reset_at) if reset_at is not None else None,
+        reset_interval=cast(ResetInterval | None, interval),
+    )
+
+
+def _apply_cache_age(snapshot: OcxQuotaSnapshot, now: datetime) -> OcxQuotaSnapshot:
+    age = now.astimezone(UTC) - snapshot.cache_written_at
+    if age <= _FRESH_FOR:
+        return snapshot
+    providers: dict[LogicalProvider, NormalizedQuotaSnapshot] = {}
+    for provider, value in snapshot.providers.items():
+        if age <= _STALE_FOR:
+            providers[provider] = _with_freshness(
+                value,
+                "stale" if value.freshness == "fresh" else value.freshness,
+            )
+        else:
+            providers[provider] = _unavailable(provider, value.updated_at)
+    return OcxQuotaSnapshot(
+        providers=MappingProxyType(providers),
+        generated_at=snapshot.generated_at,
+        cache_written_at=snapshot.cache_written_at,
+    )
+
+
+def _with_freshness(
+    snapshot: NormalizedQuotaSnapshot, freshness: Freshness
+) -> NormalizedQuotaSnapshot:
+    return NormalizedQuotaSnapshot(
+        provider=snapshot.provider,
+        source=snapshot.source,
+        source_label=snapshot.source_label,
+        windows=snapshot.windows,
+        account_credits_usd=snapshot.account_credits_usd,
+        key_budget_usd=snapshot.key_budget_usd,
+        updated_at=snapshot.updated_at,
+        freshness=freshness,
+        provenance=snapshot.provenance,
+        details=snapshot.details,
+    )
+
+
+def _empty_snapshot() -> OcxQuotaSnapshot:
+    now = _utcnow()
+    return OcxQuotaSnapshot(MappingProxyType({}), now, now)
+
+
+def _milliseconds(value: datetime) -> float:
+    if value.tzinfo is None or value.utcoffset() is None:
+        raise ValueError("cache timestamps must be timezone-aware")
+    return value.timestamp() * 1000
+
+
+def _utcnow() -> datetime:
+    return datetime.now(UTC)
+
+
+def _reset_runtime_state_for_tests() -> None:
+    global _run_in_flight, _last_forced_started
+    with _RUN_CONDITION:
+        _run_in_flight = False
+        _last_forced_started = None
+        _RUN_CONDITION.notify_all()
+
+
+def _wait_for_idle_for_tests(timeout: float) -> bool:
+    with _RUN_CONDITION:
+        return _RUN_CONDITION.wait_for(lambda: not _run_in_flight, timeout=timeout)
 
 
 _PROVIDER_MAP: Mapping[str, LogicalProvider] = MappingProxyType(
