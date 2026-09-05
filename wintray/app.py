@@ -135,6 +135,12 @@ class _PanelPlacement:
     viewport: PanelViewport
 
 
+@dataclass(frozen=True, slots=True)
+class _RenderedPanelViewport:
+    work_area: tuple[int, int, int, int]
+    viewport: PanelViewport
+
+
 TRAY_UNKNOWN_COLOR = (110, 118, 129, 255)
 TRAY_NORMAL_COLOR = (244, 145, 100, 255)
 TRAY_PAUSED_COLOR = (255, 196, 57, 255)
@@ -1004,8 +1010,15 @@ class _WindowsTrayController:
         if placement.viewport.scrollable and not viewport_applied:
             return
 
+        rendered_viewport = _RenderedPanelViewport(
+            placement.work_area,
+            placement.viewport,
+        )
         self._dispatch_window_mutation(
-            lambda: self._place_window_on_ui_thread(placement=placement)
+            lambda: self._place_window_on_ui_thread(
+                force_default=force_default,
+                rendered_viewport=rendered_viewport,
+            )
         )
 
     def _resolve_panel_placement(self, *, force_default: bool = False) -> _PanelPlacement | None:
@@ -1036,15 +1049,28 @@ class _WindowsTrayController:
         self,
         *,
         force_default: bool = False,
-        placement: _PanelPlacement | None = None,
+        rendered_viewport: _RenderedPanelViewport | None = None,
     ) -> None:
         if self.window is None or self.stopping.is_set():
             return
-        placement = placement or self._resolve_panel_placement(force_default=force_default)
+        placement = self._resolve_panel_placement(force_default=force_default)
         if placement is None:
             return
-        width = int(round(placement.viewport.width))
-        height = int(round(placement.viewport.height))
+        if rendered_viewport is not None and (
+            placement.work_area != rendered_viewport.work_area
+            or placement.viewport != rendered_viewport.viewport
+        ):
+            # The user moved to another monitor, or newer content arrived,
+            # before this UI callback drained. A newer placement can safely
+            # apply its matching JS mode and geometry; this stale one cannot.
+            return
+        viewport = (
+            rendered_viewport.viewport
+            if rendered_viewport is not None
+            else placement.viewport
+        )
+        width = int(round(viewport.width))
+        height = int(round(viewport.height))
         self.window.resize(width, height)
         position = (
             placement.anchor

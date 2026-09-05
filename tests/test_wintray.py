@@ -598,7 +598,7 @@ def test_content_height_message_resizes_visible_panel_with_natural_height(
     monkeypatch.setattr(
         controller,
         "_place_window_on_ui_thread",
-        lambda *, placement: calls.append("place"),
+        lambda *, force_default, rendered_viewport: calls.append("place"),
     )
 
     controller.handle_panel_message(
@@ -866,6 +866,48 @@ def test_background_window_mutation_is_dispatched_to_ui_thread(
     scheduled_drains.pop()()
     assert mutation_threads == [main_thread_id, main_thread_id]
     assert javascript_threads == [worker.ident]
+
+
+def test_delayed_ui_placement_uses_fresh_anchor_with_same_target_viewport(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    scheduled_drains: list[Callable[[], None]] = []
+    javascript: list[str] = []
+    mutations: list[tuple[str, int, int]] = []
+    native = SimpleNamespace(
+        InvokeRequired=True,
+        BeginInvoke=lambda callback: scheduled_drains.append(callback),
+    )
+    window = SimpleNamespace(
+        native=native,
+        x=1200,
+        y=100,
+        evaluate_js=lambda code: javascript.append(code) or True,
+        resize=lambda width, height: mutations.append(("resize", width, height)),
+        move=lambda x, y: mutations.append(("move", x, y)),
+    )
+    controller = wintray._WindowsTrayController(mock=True, interval=60)
+    controller.window = window
+    controller._content_height = 1000
+    controller._positioned_this_show = True
+    primary = (0, 0, 1000, 1200)
+    secondary = (1000, 0, 2000, 800)
+    monkeypatch.setitem(sys.modules, "System", SimpleNamespace(Action=lambda callback: callback))
+    monkeypatch.setattr(controller, "_working_area", lambda: primary)
+    monkeypatch.setattr(
+        controller,
+        "_work_area_for_point",
+        lambda point: secondary if point is not None and point[0] >= 1000 else primary,
+    )
+
+    worker = threading.Thread(target=controller._place_window)
+    worker.start()
+    worker.join()
+    window.x, window.y = 1400, 100
+    scheduled_drains.pop()()
+
+    assert "usageApplyPanelViewport(true)" in javascript[-1]
+    assert mutations == [("resize", 380, 776), ("move", 1400, 12)]
 
 
 def test_load_preferences_non_utf8(
