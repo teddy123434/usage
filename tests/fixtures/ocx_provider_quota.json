@@ -1,0 +1,169 @@
+{
+  "generatedAt": 1788540000001,
+  "reports": [
+    {
+      "provider": "openai",
+      "label": "OpenAI",
+      "source": "codex:usage",
+      "quota": {
+        "fiveHourPercent": 6,
+        "fiveHourResetAt": 1788543600000,
+        "weeklyPercent": 12,
+        "weeklyResetAt": 1789144800000,
+        "customWindows": [
+          {
+            "label": "GPT-5.3-Codex-Spark",
+            "percent": 3,
+            "resetAt": 1788626400000
+          }
+        ],
+        "updatedAt": 1788540000000
+      },
+      "aggregation": {
+        "kind": "capacity-weighted-v1",
+        "scope": "routable-known",
+        "includedAccounts": 2,
+        "excludedAccounts": 0,
+        "unknownPlanAccounts": 0,
+        "missingQuotaAccounts": 0,
+        "pausedAccounts": 0,
+        "reauthAccounts": 0,
+        "staleQuotaAccounts": 0,
+        "partialWindowAccounts": 0,
+        "incomplete": false,
+        "presentation": "aggregate",
+        "weekly": {
+          "usedPercent": 12,
+          "includedAccounts": 2,
+          "excludedAccounts": 0,
+          "incomplete": false,
+          "updatedAt": 1788540000000,
+          "nextRecoveryAt": 1789144800000,
+          "nextRecoveryPercent": 4
+        },
+        "currentAccount": {
+          "isMain": false,
+          "plan": "pro",
+          "quota": {
+            "fiveHourPercent": 7,
+            "fiveHourResetAt": 1788543600000,
+            "weeklyPercent": 17,
+            "weeklyResetAt": 1789144800000,
+            "updatedAt": 1788540000000
+          }
+        }
+      },
+      "updatedAt": 1788540000000
+    },
+    {
+      "provider": "anthropic",
+      "label": "Anthropic",
+      "source": "anthropic:usage",
+      "quota": {
+        "fiveHourPercent": 31,
+        "fiveHourResetAt": 1788547200000,
+        "weeklyPercent": 44,
+        "weeklyResetAt": 1789144800000,
+        "updatedAt": 1788540000000
+      },
+      "updatedAt": 1788540000000
+    },
+    {
+      "provider": "google-antigravity",
+      "label": "Google Antigravity",
+      "source": "antigravity:usage",
+      "quota": {
+        "fiveHourPercent": 0,
+        "weeklyPercent": 0,
+        "customWindows": [
+          {
+            "label": "Gemini 3.1 Pro",
+            "percent": 0,
+            "resetAt": 1788626400000
+          }
+        ],
+        "updatedAt": 1788540000000
+      },
+      "updatedAt": 1788540000000
+    },
+    {
+      "provider": "xai",
+      "label": "xAI",
+      "source": "xai:credits",
+      "quota": {
+        "weeklyPercent": 0,
+        "weeklyResetAt": 1789144800000,
+        "updatedAt": 1788540000000
+      },
+      "updatedAt": 1788540000000
+    },
+    {
+      "provider": "openrouter",
+      "label": "OpenRouter",
+      "source": "openrouter:credits+key-info",
+      "quota": {
+        "accountCreditsUsd": {
+          "totalCredits": 100,
+          "totalUsage": 25.25,
+          "remaining": 74.75
+        },
+        "creditsUsd": {
+          "used": 2,
+          "limit": 10,
+          "remaining": 8,
+          "percent": 20,
+          "unlimited": false,
+          "resetAt": 1791132000000,
+          "resetInterval": "monthly"
+        },
+        "customWindows": [
+          {
+            "label": "API credits ($8.00 of $10.00 remaining)",
+            "percent": 20,
+            "resetAt": 1791132000000
+          }
+        ],
+        "updatedAt": 1788540000000
+      },
+      "updatedAt": 1788540000000
+    },
+    {
+      "provider": "future-provider",
+      "label": "Unknown",
+      "source": "unknown:usage",
+      "quota": {
+        "weeklyPercent": 99,
+        "updatedAt": 1788540000000
+      },
+      "updatedAt": 1788540000000
+    }
+  ],
+  "statuses": [
+    {
+      "provider": "openai",
+      "status": "ok",
+      "observedAt": 1788540000000
+    },
+    {
+      "provider": "anthropic",
+      "status": "reauth_required",
+      "observedAt": 1788540000000,
+      "message": "redacted fixture text that must not be retained"
+    },
+    {
+      "provider": "google-antigravity",
+      "status": "ok",
+      "observedAt": 1788540000000
+    },
+    {
+      "provider": "xai",
+      "status": "ok",
+      "observedAt": 1788540000000
+    },
+    {
+      "provider": "openrouter",
+      "status": "ok",
+      "observedAt": 1788540000000
+    }
+  ]
+}
