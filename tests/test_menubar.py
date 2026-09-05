@@ -7,6 +7,7 @@
 from __future__ import annotations
 
 import json
+import time
 from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -319,7 +320,7 @@ def test_cached_panel_viewport_does_not_reset_scroll_on_refresh_or_theme_return(
 def test_popover_viewport_keeps_width_and_caps_to_visible_frame(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    state = object()
+    state = menubar_state._empty_state("en")
     panel = SimpleNamespace(id="classic")
     screen = SimpleNamespace(visibleFrame=lambda: SimpleNamespace(size=SimpleNamespace(height=945)))
     monkeypatch.setattr(menubar_popover, "NSApp", lambda: object())
@@ -675,6 +676,7 @@ def test_switch_panel_menu_contains_update_items(monkeypatch: pytest.MonkeyPatch
         "OpenRouter",
     ]
     source_parent = next(item for item in main_menu.items if item.title == "Quota Sources")
+    assert isinstance(source_parent.submenu, _FakeMenu)
     source_groups = source_parent.submenu.items
     assert [item.title for item in source_groups] == [
         "Claude Code",
@@ -682,12 +684,14 @@ def test_switch_panel_menu_contains_update_items(monkeypatch: pytest.MonkeyPatch
         "Antigravity",
         "Grok",
     ]
-    assert [item.title for item in source_groups[1].submenu.items] == [
+    source_submenu = source_groups[1].submenu
+    assert isinstance(source_submenu, _FakeMenu)
+    assert [item.title for item in source_submenu.items] == [
         "Auto",
         "Native",
         "OCX",
     ]
-    assert [item.state for item in source_groups[1].submenu.items] == [1, 0, 0]
+    assert [item.state for item in source_submenu.items] == [1, 0, 0]
     prefer_ocx = next(item for item in main_menu.items if item.title == "Prefer OCX")
     assert prefer_ocx.action == "togglePreferOcx:"
     assert prefer_ocx.state == 0
@@ -1554,10 +1558,15 @@ def test_select_quota_source_refreshes_only_after_persist_succeeds(
     delegate = menubar.AppDelegate.alloc().initWithMock_interval_(True, 60)
     saved: list[tuple[object, object]] = []
     refreshed: list[object] = []
+
+    def save_source(provider: object, mode: object) -> bool:
+        saved.append((provider, mode))
+        return True
+
     monkeypatch.setattr(
         source_controls,
         "_save_quota_source_mode",
-        lambda provider, mode: saved.append((provider, mode)) or True,
+        save_source,
     )
     monkeypatch.setattr(delegate, "refreshNow_", refreshed.append)
 
@@ -1581,11 +1590,16 @@ def test_toggle_prefer_ocx_persists_before_refresh(
     sender = _FakeMenuItem()
     delegate = menubar.AppDelegate.alloc().initWithMock_interval_(True, 60)
     calls: list[object] = []
+
+    def save_preference(enabled: object) -> bool:
+        calls.append(("save", enabled))
+        return True
+
     monkeypatch.setattr(source_controls, "_prefer_ocx_enabled", lambda: False)
     monkeypatch.setattr(
         source_controls,
         "_save_prefer_ocx",
-        lambda enabled: calls.append(("save", enabled)) or True,
+        save_preference,
     )
     monkeypatch.setattr(delegate, "refreshNow_", lambda value: calls.append(("refresh", value)))
 
@@ -2329,7 +2343,7 @@ def test_set_button_title_rebuilds_icons_when_equal_values_are_reordered(
     state.hide_grok = True
     rendered_orders: list[tuple[str, ...]] = []
 
-    def render(app: object, current: menubar.PopoverState) -> object:
+    def render(app: menubar_title._TitleApp, current: menubar.PopoverState) -> object:
         rendered_orders.append(
             tuple(provider for provider, _text in menubar_title._title_segments(app, current))
         )
@@ -3237,7 +3251,7 @@ def test_load_sources_reads_one_ocx_snapshot_for_the_refresh(
     )
     calls = 0
 
-    def load_ocx():
+    def load_ocx() -> OcxQuotaSnapshot:
         nonlocal calls
         calls += 1
         return ocx
@@ -3658,7 +3672,7 @@ def test_openrouter_status_only_reauth_retains_previous_or_builds_placeholder(
             status["status"] = "reauth_required"
     now = datetime(2026, 9, 5, tzinfo=UTC)
     ocx = parse_ocx_quota_payload(payload, now)
-    monkeypatch.setattr(menubar_refresh.time, "time", lambda: now.timestamp())
+    monkeypatch.setattr(time, "time", lambda: now.timestamp())
     monkeypatch.setattr(menubar_refresh, "_quota_source_mode", lambda *_: "native")
     monkeypatch.setattr(menubar_refresh, "_quota_last_source", lambda *_: None)
 
@@ -3719,7 +3733,7 @@ def test_openrouter_reauth_discards_balance_older_than_twenty_four_hours(
             status["status"] = "reauth_required"
     now = datetime(2026, 9, 5, 12, tzinfo=UTC)
     ocx = parse_ocx_quota_payload(payload, now)
-    monkeypatch.setattr(menubar_refresh.time, "time", lambda: now.timestamp())
+    monkeypatch.setattr(time, "time", lambda: now.timestamp())
     monkeypatch.setattr(menubar_refresh, "_quota_source_mode", lambda *_: "native")
     monkeypatch.setattr(menubar_refresh, "_quota_last_source", lambda *_: None)
     previous = menubar_state._empty_state("en")
@@ -3781,7 +3795,7 @@ def test_openrouter_reauth_rejects_invalid_or_future_previous_quota_timestamp(
     previous.provider_sources["openrouter"] = menubar_state.ProviderSourceState(
         "ocx", "OCX", "fresh", None, previous_updated_at
     )
-    monkeypatch.setattr(menubar_refresh.time, "time", lambda: now.timestamp())
+    monkeypatch.setattr(time, "time", lambda: now.timestamp())
     monkeypatch.setattr(menubar_refresh, "_quota_source_mode", lambda *_: "native")
     monkeypatch.setattr(menubar_refresh, "_quota_last_source", lambda *_: None)
 
@@ -3809,7 +3823,7 @@ def test_openrouter_missing_report_discards_balance_older_than_twenty_four_hours
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     now = datetime(2026, 9, 5, 12, tzinfo=UTC)
-    monkeypatch.setattr(menubar_refresh.time, "time", lambda: now.timestamp())
+    monkeypatch.setattr(time, "time", lambda: now.timestamp())
     monkeypatch.setattr(menubar_refresh, "_quota_source_mode", lambda *_: "native")
     monkeypatch.setattr(menubar_refresh, "_quota_last_source", lambda *_: None)
     previous = menubar_state._empty_state("en")

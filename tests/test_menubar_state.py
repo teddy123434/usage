@@ -14,6 +14,7 @@ import pytest
 
 from loaders import codex_loader, grok_loader
 from loaders.history_loader import UsageEntry
+from loaders.ocx_quota import NormalizedQuotaSnapshot
 from menubar import state as menubar_state
 from quota.burn_rate import BurnRateTracker
 from usage_client import PollOutcome, PollState, UsageSnapshot
@@ -397,7 +398,7 @@ def test_native_claude_adapter_rejects_non_finite_poll_timestamp() -> None:
 
 def test_source_age_is_recomputed_from_retained_updated_at() -> None:
     updated_at = datetime(2026, 9, 5, 1, tzinfo=UTC)
-    snapshot = menubar_state.NormalizedQuotaSnapshot(
+    snapshot = NormalizedQuotaSnapshot(
         provider="codex",
         source="ocx",
         source_label="OCX",

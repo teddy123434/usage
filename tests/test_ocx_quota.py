@@ -7,13 +7,18 @@ import io
 import json
 import math
 import os
+import shutil
+import subprocess
+import tempfile
 import threading
 import time
+from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import FrozenInstanceError
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from types import MappingProxyType
+from typing import cast
 
 import pytest
 
@@ -98,7 +103,9 @@ def test_parse_fixture_keeps_only_whitelisted_openai_aggregation_details() -> No
     aggregation = openai["aggregation"]
     assert isinstance(aggregation, dict)
     aggregation["accountIds"] = ["must-not-survive"]
-    aggregation["currentAccount"]["email"] = "must-not-survive@example.test"  # type: ignore[index]
+    current_account = aggregation["currentAccount"]
+    assert isinstance(current_account, dict)
+    current_account["email"] = "must-not-survive@example.test"
 
     details = parse_ocx_quota_payload(payload, _NOW).providers["codex"].details
 
@@ -411,14 +418,14 @@ def test_runner_resolves_explicit_path_and_uses_fixed_argv_without_shell(
         tmp_path / "ocx explicit",
         "printf '%s\\n' \"$@\"",
     )
-    calls: list[tuple[object, ...]] = []
-    real_popen = ocx_quota.subprocess.Popen
+    calls: list[tuple[tuple[object, ...], dict[str, object]]] = []
+    real_popen = cast(Callable[..., subprocess.Popen[bytes]], subprocess.Popen)
 
-    def recording_popen(*args: object, **kwargs: object) -> object:
+    def recording_popen(*args: object, **kwargs: object) -> subprocess.Popen[bytes]:
         calls.append((args, kwargs))
         return real_popen(*args, **kwargs)
 
-    monkeypatch.setattr(ocx_quota.subprocess, "Popen", recording_popen)
+    monkeypatch.setattr(subprocess, "Popen", recording_popen)
 
     result = ocx_quota._run_ocx_command(executable, force=force, timeout=1.0)
 
@@ -447,7 +454,7 @@ def test_load_uses_two_second_timeout_and_forced_refresh_uses_twenty(
 
     monkeypatch.setattr(ocx_quota, "_invoke_ocx", fake_run)
     ocx_quota.load_ocx_quota()
-    assert ocx_quota.request_ocx_refresh() is None
+    ocx_quota.request_ocx_refresh()
     assert ocx_quota._wait_for_idle_for_tests(timeout=1)
 
     assert timeouts == [
@@ -500,7 +507,7 @@ def test_missing_binary_never_replaces_last_good_cache(monkeypatch: pytest.Monke
     cached = parse_ocx_quota_payload(_payload(), _NOW - timedelta(minutes=1))
     ocx_quota._write_cache(cached)
     before = ocx_quota.OCX_CACHE_PATH.read_bytes()
-    monkeypatch.setattr(ocx_quota.shutil, "which", lambda _name: None)
+    monkeypatch.setattr(shutil, "which", lambda _name: None)
 
     result = ocx_quota.load_ocx_quota()
 
@@ -523,7 +530,7 @@ def test_interrupted_process_is_terminated_reaped_and_does_not_write(
             raise KeyboardInterrupt
         return real_monotonic()
 
-    monkeypatch.setattr(ocx_quota.time, "monotonic", interrupt_once)
+    monkeypatch.setattr(time, "monotonic", interrupt_once)
 
     with pytest.raises(KeyboardInterrupt):
         ocx_quota.load_ocx_quota()
@@ -535,26 +542,31 @@ def test_cache_write_is_atomic_fsynced_and_private(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
     snapshot = parse_ocx_quota_payload(_payload(), _NOW)
-    replacements: list[tuple[object, object]] = []
+    replacements: list[tuple[str | bytes, str | bytes]] = []
     fsyncs: list[int] = []
     real_replace = os.replace
     real_fsync = os.fsync
 
-    def recording_replace(source: object, destination: object) -> None:
-        replacements.append((source, destination))
+    def recording_replace(
+        source: str | bytes | os.PathLike[str] | os.PathLike[bytes],
+        destination: str | bytes | os.PathLike[str] | os.PathLike[bytes],
+    ) -> None:
+        replacements.append((os.fspath(source), os.fspath(destination)))
         real_replace(source, destination)
 
     def recording_fsync(fd: int) -> None:
         fsyncs.append(fd)
         real_fsync(fd)
 
-    monkeypatch.setattr(ocx_quota.os, "replace", recording_replace)
-    monkeypatch.setattr(ocx_quota.os, "fsync", recording_fsync)
+    monkeypatch.setattr(os, "replace", recording_replace)
+    monkeypatch.setattr(os, "fsync", recording_fsync)
 
     ocx_quota._write_cache(snapshot)
 
-    assert replacements and Path(replacements[0][0]).parent == ocx_quota.OCX_CACHE_PATH.parent
-    assert replacements[0][1] == ocx_quota.OCX_CACHE_PATH
+    assert replacements and Path(os.fsdecode(replacements[0][0])).parent == (
+        ocx_quota.OCX_CACHE_PATH.parent
+    )
+    assert os.fsdecode(replacements[0][1]) == str(ocx_quota.OCX_CACHE_PATH)
     assert len(fsyncs) >= 2
     assert ocx_quota.OCX_CACHE_PATH.stat().st_mode & 0o777 == 0o600
     disk = json.loads(ocx_quota.OCX_CACHE_PATH.read_text())
@@ -624,13 +636,13 @@ def test_forced_refresh_starts_at_most_once_per_five_monotonic_minutes(
         return json.dumps(_payload()).encode()
 
     monkeypatch.setattr(ocx_quota, "_invoke_ocx", fake_run)
-    monkeypatch.setattr(ocx_quota.time, "monotonic", lambda: monotonic_now)
+    monkeypatch.setattr(time, "monotonic", lambda: monotonic_now)
 
-    assert ocx_quota.request_ocx_refresh() is None
+    ocx_quota.request_ocx_refresh()
     assert ocx_quota._wait_for_idle_for_tests(timeout=1)
-    assert ocx_quota.request_ocx_refresh() is None
+    ocx_quota.request_ocx_refresh()
     monotonic_now += ocx_quota.FORCED_REFRESH_INTERVAL_S
-    assert ocx_quota.request_ocx_refresh() is None
+    ocx_quota.request_ocx_refresh()
     assert ocx_quota._wait_for_idle_for_tests(timeout=1)
 
     assert calls == 2
@@ -647,9 +659,11 @@ def test_request_refresh_returns_before_daemon_finishes(monkeypatch: pytest.Monk
         return json.dumps(_payload()).encode()
 
     monkeypatch.setattr(ocx_quota, "_invoke_ocx", fake_run)
-    caller = threading.Thread(
-        target=lambda: (ocx_quota.request_ocx_refresh(), returned.set()),
-    )
+    def request_and_mark_returned() -> None:
+        ocx_quota.request_ocx_refresh()
+        returned.set()
+
+    caller = threading.Thread(target=request_and_mark_returned)
     caller.start()
 
     assert entered.wait(timeout=1)
@@ -699,7 +713,7 @@ def test_forced_refresh_interval_is_measured_from_start_even_after_failure(
         raise ocx_quota.OcxCommandError("fixture failure")
 
     monkeypatch.setattr(ocx_quota, "_invoke_ocx", failing_run)
-    monkeypatch.setattr(ocx_quota.time, "monotonic", lambda: monotonic_now)
+    monkeypatch.setattr(time, "monotonic", lambda: monotonic_now)
 
     ocx_quota.request_ocx_refresh()
     assert ocx_quota._wait_for_idle_for_tests(timeout=1)
@@ -753,7 +767,7 @@ def test_start_keyboard_interrupt_after_worker_started_stays_fail_closed(
             raise KeyboardInterrupt
 
     monkeypatch.setattr(ocx_quota, "_invoke_ocx", fake_run)
-    monkeypatch.setattr(ocx_quota.threading, "Thread", StartThenInterrupt)
+    monkeypatch.setattr(threading, "Thread", StartThenInterrupt)
 
     with pytest.raises(KeyboardInterrupt):
         ocx_quota.request_ocx_refresh()
@@ -782,7 +796,7 @@ def test_unstarted_thread_exception_can_finish_flight(
         def start(self) -> None:
             raise RuntimeError("fixture start failure")
 
-    monkeypatch.setattr(ocx_quota.threading, "Thread", NeverStarted)
+    monkeypatch.setattr(threading, "Thread", NeverStarted)
 
     with pytest.raises(RuntimeError, match="fixture start failure"):
         ocx_quota.request_ocx_refresh()
@@ -827,14 +841,14 @@ def test_pending_refresh_clock_interrupt_is_propagated_and_not_consumed(
     thread = threading.Thread(target=owner)
     thread.start()
     assert normal_entered.wait(timeout=1)
-    monkeypatch.setattr(ocx_quota.time, "monotonic", interrupted_clock)
+    monkeypatch.setattr(time, "monotonic", interrupted_clock)
     ocx_quota.request_ocx_refresh()
     normal_release.set()
     assert owner_done.wait(timeout=1)
 
     assert len(owner_errors) == 1 and isinstance(owner_errors[0], KeyboardInterrupt)
     assert ocx_quota._pending_forced_refresh is True
-    monkeypatch.setattr(ocx_quota.time, "monotonic", lambda: 500.0)
+    monkeypatch.setattr(time, "monotonic", lambda: 500.0)
     ocx_quota.request_ocx_refresh()
     assert ocx_quota._wait_for_idle_for_tests(timeout=1)
     assert calls == [False, True]
@@ -842,7 +856,7 @@ def test_pending_refresh_clock_interrupt_is_propagated_and_not_consumed(
 
 
 class _LifecycleProcess:
-    def __init__(self, *, waits: list[object] | None = None) -> None:
+    def __init__(self, *, waits: list[int | BaseException] | None = None) -> None:
         self.stdout = io.BytesIO(b"{}")
         self.stderr = io.BytesIO()
         self.returncode: int | None = None
@@ -864,7 +878,7 @@ class _LifecycleProcess:
         outcome = self._waits.pop(0) if self._waits else 0
         if isinstance(outcome, BaseException):
             raise outcome
-        self.returncode = int(outcome)
+        self.returncode = outcome
         return self.returncode
 
 
@@ -893,8 +907,8 @@ def test_reader_start_exception_terminates_and_reaps_child(
         def is_alive(self) -> bool:
             return False
 
-    monkeypatch.setattr(ocx_quota.subprocess, "Popen", lambda *args, **kwargs: process)
-    monkeypatch.setattr(ocx_quota.threading, "Thread", FakeThread)
+    monkeypatch.setattr(subprocess, "Popen", lambda *args, **kwargs: process)
+    monkeypatch.setattr(threading, "Thread", FakeThread)
 
     with pytest.raises(RuntimeError, match="thread start"):
         ocx_quota._run_ocx_command(tmp_path / "ocx", force=False, timeout=1)
@@ -909,9 +923,9 @@ def test_deadline_exception_terminates_and_reaps_child(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
     process = _LifecycleProcess()
-    monkeypatch.setattr(ocx_quota.subprocess, "Popen", lambda *args, **kwargs: process)
+    monkeypatch.setattr(subprocess, "Popen", lambda *args, **kwargs: process)
     monkeypatch.setattr(
-        ocx_quota.time,
+        time,
         "monotonic",
         lambda: (_ for _ in ()).throw(KeyboardInterrupt()),
     )
@@ -925,31 +939,31 @@ def test_deadline_exception_terminates_and_reaps_child(
 
 
 def test_cleanup_escalates_terminate_wait_kill_wait_and_confirms_reap() -> None:
-    timeout = ocx_quota.subprocess.TimeoutExpired("ocx", 0.5)
+    timeout = subprocess.TimeoutExpired("ocx", 0.5)
     process = _LifecycleProcess(waits=[timeout, 0])
 
-    assert ocx_quota._stop_process(process) is True
+    assert ocx_quota._stop_process(cast(subprocess.Popen[bytes], process)) is True
     assert process.calls == ["poll", "terminate", "wait:0.5", "kill", "wait:0.5"]
     assert process.returncode == 0
 
 
 def test_cleanup_reports_unreaped_only_after_kill_wait_also_fails() -> None:
-    first_timeout = ocx_quota.subprocess.TimeoutExpired("ocx", 0.5)
-    second_timeout = ocx_quota.subprocess.TimeoutExpired("ocx", 0.5)
+    first_timeout = subprocess.TimeoutExpired("ocx", 0.5)
+    second_timeout = subprocess.TimeoutExpired("ocx", 0.5)
     process = _LifecycleProcess(waits=[first_timeout, second_timeout])
 
-    assert ocx_quota._stop_process(process) is False
+    assert ocx_quota._stop_process(cast(subprocess.Popen[bytes], process)) is False
     assert process.calls == ["poll", "terminate", "wait:0.5", "kill", "wait:0.5"]
 
 
 def test_runner_surfaces_unreaped_child_as_fail_closed_error(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
-    timeout = ocx_quota.subprocess.TimeoutExpired("ocx", 0.5)
+    timeout = subprocess.TimeoutExpired("ocx", 0.5)
     process = _LifecycleProcess(waits=[timeout, timeout])
-    monkeypatch.setattr(ocx_quota.subprocess, "Popen", lambda *args, **kwargs: process)
+    monkeypatch.setattr(subprocess, "Popen", lambda *args, **kwargs: process)
     monkeypatch.setattr(
-        ocx_quota.time,
+        time,
         "monotonic",
         lambda: (_ for _ in ()).throw(RuntimeError("fixture deadline failure")),
     )
@@ -1046,24 +1060,24 @@ def test_cache_temp_fd_is_closed_and_unlinked_on_setup_failure(
     monkeypatch: pytest.MonkeyPatch, failure_point: str
 ) -> None:
     snapshot = parse_ocx_quota_payload(_payload(), _NOW)
-    real_mkstemp = ocx_quota.tempfile.mkstemp
-    captured: dict[str, object] = {}
+    real_mkstemp = cast(Callable[..., tuple[int, str]], tempfile.mkstemp)
+    captured: dict[str, int | str] = {}
 
     def recording_mkstemp(*args: object, **kwargs: object) -> tuple[int, str]:
         fd, path = real_mkstemp(*args, **kwargs)
         captured.update(fd=fd, path=path)
         return fd, path
 
-    monkeypatch.setattr(ocx_quota.tempfile, "mkstemp", recording_mkstemp)
+    monkeypatch.setattr(tempfile, "mkstemp", recording_mkstemp)
     if failure_point == "fchmod":
         monkeypatch.setattr(
-            ocx_quota.os,
+            os,
             "fchmod",
             lambda *_args: (_ for _ in ()).throw(OSError("fixture fchmod failure")),
         )
     else:
         monkeypatch.setattr(
-            ocx_quota.os,
+            os,
             "fdopen",
             lambda *_args, **_kwargs: (_ for _ in ()).throw(OSError("fixture fdopen failure")),
         )
@@ -1071,6 +1085,10 @@ def test_cache_temp_fd_is_closed_and_unlinked_on_setup_failure(
     with pytest.raises(OSError, match="fixture"):
         ocx_quota._write_cache(snapshot)
 
+    descriptor = captured["fd"]
+    path = captured["path"]
+    assert isinstance(descriptor, int)
+    assert isinstance(path, str)
     with pytest.raises(OSError):
-        os.fstat(int(captured["fd"]))
-    assert not Path(str(captured["path"])).exists()
+        os.fstat(descriptor)
+    assert not Path(path).exists()

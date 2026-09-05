@@ -28,6 +28,7 @@ from loaders.ocx_quota import OcxQuotaSnapshot, parse_ocx_quota_payload
 from menubar import agy as menubar_agy
 from menubar import prefs as menubar_prefs
 from menubar import state as menubar_state
+from panels.panel_scale import PanelViewport
 from updates import checker as update_checker
 from usage_client import PollOutcome, PollState
 from usage_notifications import NotificationEvent
@@ -769,10 +770,15 @@ def test_first_show_uses_saved_short_monitor_for_scroll_mode(
 ) -> None:
     javascript: list[str] = []
     mutations: list[tuple[str, int, int]] = []
+
+    def evaluate_js(code: str) -> bool:
+        javascript.append(code)
+        return True
+
     window = SimpleNamespace(
         x=100,
         y=100,
-        evaluate_js=lambda code: javascript.append(code) or True,
+        evaluate_js=evaluate_js,
         resize=lambda width, height: mutations.append(("resize", width, height)),
         move=lambda x, y: mutations.append(("move", x, y)),
     )
@@ -801,10 +807,15 @@ def test_forced_reset_uses_tall_primary_monitor_for_scroll_mode(
 ) -> None:
     javascript: list[str] = []
     mutations: list[tuple[str, int, int]] = []
+
+    def evaluate_js(code: str) -> bool:
+        javascript.append(code)
+        return True
+
     window = SimpleNamespace(
         x=1200,
         y=100,
-        evaluate_js=lambda code: javascript.append(code) or True,
+        evaluate_js=evaluate_js,
         resize=lambda width, height: mutations.append(("resize", width, height)),
         move=lambda x, y: mutations.append(("move", x, y)),
     )
@@ -880,11 +891,16 @@ def test_delayed_ui_placement_uses_fresh_anchor_with_same_target_viewport(
         InvokeRequired=True,
         BeginInvoke=lambda callback: scheduled_drains.append(callback),
     )
+
+    def evaluate_js(code: str) -> bool:
+        javascript.append(code)
+        return True
+
     window = SimpleNamespace(
         native=native,
         x=1200,
         y=100,
-        evaluate_js=lambda code: javascript.append(code) or True,
+        evaluate_js=evaluate_js,
         resize=lambda width, height: mutations.append(("resize", width, height)),
         move=lambda x, y: mutations.append(("move", x, y)),
     )
@@ -984,12 +1000,12 @@ def test_concurrent_viewport_application_keeps_generation_in_js_order(
     short = wintray._PanelPlacement(
         (1000, 0, 2000, 800),
         (1200, 100),
-        wintray.PanelViewport(380, 776, 1000, True),
+        PanelViewport(380, 776, 1000, True),
     )
     tall = wintray._PanelPlacement(
         (0, 0, 1000, 1200),
         (100, 100),
-        wintray.PanelViewport(380, 1000, 1000, False),
+        PanelViewport(380, 1000, 1000, False),
     )
     controller = wintray._WindowsTrayController(mock=True, interval=60)
     controller.window = SimpleNamespace(
@@ -1081,7 +1097,7 @@ def test_unavailable_non_scroll_viewport_does_not_publish_generation(
         lambda *, force_default=False: wintray._PanelPlacement(
             (0, 0, 1000, 1200),
             (100, 100),
-            wintray.PanelViewport(380, 1000, 1000, False),
+            PanelViewport(380, 1000, 1000, False),
         ),
     )
     monkeypatch.setattr(controller, "_dispatch_window_mutation", callbacks.append)
@@ -1459,16 +1475,25 @@ def test_windows_source_controls_persist_before_refresh(
 ) -> None:
     controller = wintray._WindowsTrayController(mock=True, interval=60)
     calls: list[object] = []
+
+    def save_source(provider: object, mode: object) -> bool:
+        calls.append(("save-source", provider, mode))
+        return True
+
+    def save_preference(enabled: object) -> bool:
+        calls.append(("save-prefer", enabled))
+        return True
+
     monkeypatch.setattr(
         wintray,
         "_save_quota_source_mode",
-        lambda provider, mode: calls.append(("save-source", provider, mode)) or True,
+        save_source,
     )
     monkeypatch.setattr(wintray, "_prefer_ocx_enabled", lambda: False)
     monkeypatch.setattr(
         wintray,
         "_save_prefer_ocx",
-        lambda enabled: calls.append(("save-prefer", enabled)) or True,
+        save_preference,
     )
     monkeypatch.setattr(controller, "refresh", lambda: calls.append("refresh"))
 

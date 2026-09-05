@@ -3,9 +3,11 @@
 from __future__ import annotations
 
 import os
+from collections.abc import Mapping
 from datetime import UTC, datetime
 from pathlib import Path
 from types import MappingProxyType
+from typing import Literal, cast
 
 import pytest
 
@@ -42,12 +44,12 @@ def _snapshot(
 
 
 @pytest.mark.parametrize("mode", ["native", "ocx"])
-def test_explicit_source_wins_without_substitution(mode: str) -> None:
+def test_explicit_source_wins_without_substitution(mode: Literal["native", "ocx"]) -> None:
     native = _snapshot("native")
     ocx = _snapshot("ocx", freshness="unavailable")
 
     selected = select_quota_source(
-        mode=mode,  # type: ignore[arg-type]
+        mode=mode,
         native=native,
         ocx=ocx,
         proven_ocx_route=mode == "native",
@@ -133,7 +135,9 @@ def test_data_bearing_reauth_snapshot_remains_displayable() -> None:
 
 
 @pytest.mark.parametrize("last_selected", ["native", "ocx"])
-def test_auto_ambiguous_retains_last_displayable_source(last_selected: str) -> None:
+def test_auto_ambiguous_retains_last_displayable_source(
+    last_selected: Literal["native", "ocx"],
+) -> None:
     native = _snapshot("native", freshness="stale")
     ocx = _snapshot("ocx", freshness="stale")
 
@@ -142,7 +146,7 @@ def test_auto_ambiguous_retains_last_displayable_source(last_selected: str) -> N
         native=native,
         ocx=ocx,
         proven_ocx_route=False,
-        last_selected=last_selected,  # type: ignore[arg-type]
+        last_selected=last_selected,
     )
 
     expected = native if last_selected == "native" else ocx
@@ -369,7 +373,7 @@ def test_load_route_facts_reads_only_exact_native_owned_blocks(tmp_path: Path) -
 
     assert proven_ocx_route("codex", route=facts["codex"])
     assert proven_ocx_route("grok", route=facts["grok"])
-    assert proven_ocx_route("claude", env=facts["claude"])
+    assert proven_ocx_route("claude", env=cast(Mapping[str, str], facts["claude"]))
     assert facts["antigravity"] == {}
 
 

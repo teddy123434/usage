@@ -5,11 +5,17 @@ from __future__ import annotations
 import json
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
+from types import SimpleNamespace
+from typing import cast
 
 from loaders.ocx_quota import KeyBudgetUsd, NormalizedQuotaSnapshot, parse_ocx_quota_payload
 from menubar import openrouter
 from menubar import state as menubar_state
 from menubar import title as menubar_title
+
+
+def _title_app() -> menubar_title._TitleApp:
+    return cast(menubar_title._TitleApp, SimpleNamespace(codex_5h_pct=None))
 
 
 def _snapshot() -> NormalizedQuotaSnapshot:
@@ -162,7 +168,7 @@ def test_openrouter_title_prefers_account_and_preserves_valid_zero() -> None:
         )
     )
 
-    assert menubar_title._compose_title(object(), state) == "OR $0.00"
+    assert menubar_title._compose_title(_title_app(), state) == "OR $0.00"
 
 
 def test_openrouter_title_labels_key_scope_and_respects_card_order() -> None:
@@ -182,12 +188,12 @@ def test_openrouter_title_labels_key_scope_and_respects_card_order() -> None:
     state.hide_claude = False
     state.claude_session.percent = 31.0
 
-    assert menubar_title._compose_title(object(), state) == "OR Key $8.00 · 31%"
+    assert menubar_title._compose_title(_title_app(), state) == "OR Key $8.00 · 31%"
 
 
 def test_openrouter_title_omits_unavailable_and_localizes_unlimited() -> None:
     unavailable = _title_state(openrouter.unavailable_state())
-    assert menubar_title._compose_title(object(), unavailable) == "usage"
+    assert menubar_title._compose_title(_title_app(), unavailable) == "usage"
 
     unlimited = _title_state(
         menubar_state.OpenRouterState(
@@ -202,4 +208,4 @@ def test_openrouter_title_omits_unavailable_and_localizes_unlimited() -> None:
             key_unlimited=True,
         )
     )
-    assert menubar_title._compose_title(object(), unlimited) == "OR Unlimited"
+    assert menubar_title._compose_title(_title_app(), unlimited) == "OR Unlimited"
