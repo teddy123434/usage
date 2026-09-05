@@ -105,3 +105,102 @@ def test_save_panel_flavor_rejects_invalid_values(
     assert menubar_prefs._save_panel_flavor(flavor) is False
     assert preferences_file.exists() is False
     assert menubar_prefs._panel_flavor() == "mocha"
+
+
+def test_quota_source_mode_defaults_to_auto_and_validates_provider() -> None:
+    assert menubar_prefs._quota_source_mode("claude", {}) == "auto"
+    assert menubar_prefs._quota_source_mode(
+        "codex", {"quota_source_modes": {"codex": "ocx"}}
+    ) == "ocx"
+    assert menubar_prefs._quota_source_mode(
+        "codex", {"quota_source_modes": {"codex": "invalid"}}
+    ) == "auto"
+    assert menubar_prefs._quota_source_mode(
+        "openrouter", {"quota_source_modes": {"openrouter": "ocx"}}
+    ) == "auto"
+
+
+def test_save_quota_source_mode_round_trips_without_discarding_other_providers(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    preferences_file = tmp_path / "usage-preferences.json"
+    monkeypatch.setattr(prefs, "PREFERENCES_FILE", preferences_file)
+    prefs._save_preferences({"quota_source_modes": {"claude": "native"}})
+
+    assert menubar_prefs._save_quota_source_mode("codex", "ocx") is True
+    saved = prefs._load_preferences()
+    assert saved["quota_source_modes"] == {"claude": "native", "codex": "ocx"}
+    assert menubar_prefs._quota_source_mode("codex") == "ocx"
+
+
+@pytest.mark.parametrize(
+    ("provider", "mode"),
+    [("openrouter", "ocx"), ("codex", "invalid"), ("codex", None)],
+)
+def test_save_quota_source_mode_rejects_invalid_values_without_writing(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    provider: object,
+    mode: object,
+) -> None:
+    preferences_file = tmp_path / "usage-preferences.json"
+    monkeypatch.setattr(prefs, "PREFERENCES_FILE", preferences_file)
+
+    assert menubar_prefs._save_quota_source_mode(provider, mode) is False
+    assert preferences_file.exists() is False
+
+
+def test_quota_last_source_uses_saved_selection_before_global_initial_preference() -> None:
+    assert menubar_prefs._quota_last_source("codex", {}) is None
+    assert menubar_prefs._quota_last_source("codex", {"prefer_ocx": True}) == "ocx"
+    assert (
+        menubar_prefs._quota_last_source(
+            "codex",
+            {"prefer_ocx": True, "quota_last_sources": {"codex": "native"}},
+        )
+        == "native"
+    )
+
+
+def test_quota_last_source_global_preference_does_not_change_explicit_mode() -> None:
+    preferences = {
+        "prefer_ocx": True,
+        "quota_source_modes": {"codex": "native"},
+    }
+
+    assert menubar_prefs._quota_source_mode("codex", preferences) == "native"
+    assert menubar_prefs._quota_last_source("codex", preferences) == "ocx"
+
+
+def test_save_quota_last_source_round_trips(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    preferences_file = tmp_path / "usage-preferences.json"
+    monkeypatch.setattr(prefs, "PREFERENCES_FILE", preferences_file)
+
+    assert menubar_prefs._save_quota_last_source("antigravity", "ocx") is True
+    assert menubar_prefs._quota_last_source("antigravity") == "ocx"
+    assert prefs._load_preferences()["quota_last_sources"] == {"antigravity": "ocx"}
+
+
+@pytest.mark.parametrize(
+    ("provider", "source"),
+    [("openrouter", "ocx"), ("grok", "invalid"), ("grok", 1)],
+)
+def test_save_quota_last_source_rejects_invalid_values_without_writing(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    provider: object,
+    source: object,
+) -> None:
+    preferences_file = tmp_path / "usage-preferences.json"
+    monkeypatch.setattr(prefs, "PREFERENCES_FILE", preferences_file)
+
+    assert menubar_prefs._save_quota_last_source(provider, source) is False
+    assert preferences_file.exists() is False
+
+
+def test_prefer_ocx_is_strict_boolean_and_defaults_false() -> None:
+    assert menubar_prefs._prefer_ocx_enabled({}) is False
+    assert menubar_prefs._prefer_ocx_enabled({"prefer_ocx": True}) is True
+    assert menubar_prefs._prefer_ocx_enabled({"prefer_ocx": 1}) is False

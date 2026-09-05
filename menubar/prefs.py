@@ -7,12 +7,17 @@
 from __future__ import annotations
 
 from collections.abc import Mapping
+from typing import cast
 
+from loaders.ocx_quota import QuotaSource
+from menubar.quota_sources import SourceMode
 from prefs import _load_preferences, _save_preferences
 
 DEFAULT_QUOTA_CARD_ORDER = ("claude", "codex", "agy", "grok")
 DEFAULT_PANEL_FLAVOR = "mocha"
 PANEL_FLAVORS = ("latte", "frappe", "macchiato", "mocha")
+DUAL_SOURCE_PROVIDERS = ("claude", "codex", "antigravity", "grok")
+SOURCE_MODES = ("auto", "native", "ocx")
 
 
 def _resolved_preferences(prefs: Mapping[str, object] | None = None) -> Mapping[str, object]:
@@ -98,6 +103,74 @@ def _valid_quota_card_order(value: object) -> tuple[str, ...] | None:
 def _quota_notifications_enabled(prefs: Mapping[str, object] | None = None) -> bool:
     data = _resolved_preferences(prefs)
     return data.get("quota_notifications") is not False
+
+
+def _quota_source_mode(
+    provider: object, prefs: Mapping[str, object] | None = None
+) -> SourceMode:
+    if provider not in DUAL_SOURCE_PROVIDERS:
+        return "auto"
+    data = _resolved_preferences(prefs)
+    modes = data.get("quota_source_modes")
+    if not isinstance(modes, Mapping):
+        return "auto"
+    mode = modes.get(provider)
+    if mode not in SOURCE_MODES:
+        return "auto"
+    return cast(SourceMode, mode)
+
+
+def _save_quota_source_mode(provider: object, mode: object) -> bool:
+    if provider not in DUAL_SOURCE_PROVIDERS or mode not in SOURCE_MODES:
+        return False
+    preferences = _load_preferences()
+    modes = _valid_choice_mapping(preferences.get("quota_source_modes"), SOURCE_MODES)
+    modes[provider] = mode
+    preferences["quota_source_modes"] = modes
+    _save_preferences(preferences)
+    return True
+
+
+def _quota_last_source(
+    provider: object, prefs: Mapping[str, object] | None = None
+) -> QuotaSource | None:
+    if provider not in DUAL_SOURCE_PROVIDERS:
+        return None
+    data = _resolved_preferences(prefs)
+    sources = data.get("quota_last_sources")
+    if isinstance(sources, Mapping):
+        source = sources.get(provider)
+        if source in {"native", "ocx"}:
+            return cast(QuotaSource, source)
+    return "ocx" if _prefer_ocx_enabled(data) else None
+
+
+def _save_quota_last_source(provider: object, source: object) -> bool:
+    if provider not in DUAL_SOURCE_PROVIDERS or source not in {"native", "ocx"}:
+        return False
+    preferences = _load_preferences()
+    sources = _valid_choice_mapping(
+        preferences.get("quota_last_sources"), ("native", "ocx")
+    )
+    sources[provider] = source
+    preferences["quota_last_sources"] = sources
+    _save_preferences(preferences)
+    return True
+
+
+def _prefer_ocx_enabled(prefs: Mapping[str, object] | None = None) -> bool:
+    data = _resolved_preferences(prefs)
+    return data.get("prefer_ocx") is True
+
+
+def _valid_choice_mapping(value: object, choices: tuple[str, ...]) -> dict[str, str]:
+    if not isinstance(value, Mapping):
+        return {}
+    return {
+        key: item
+        for key, item in value.items()
+        if isinstance(key, str) and isinstance(item, str) and item in choices
+    }
 
 
 def _window_keeper_enabled(prefs: Mapping[str, object] | None = None) -> bool:
