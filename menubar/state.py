@@ -686,14 +686,26 @@ def native_quota_snapshot(
     """Adapt already-loaded native rows without changing the native loader."""
     if provider not in {"claude", "codex", "antigravity", "grok"}:
         return None
+    displayable_rows = tuple(
+        row for row in rows if row.available and row.percent is not None
+    )
     windows = tuple(
-        NormalizedQuotaWindow(row.title or "quota", row.percent, None)
-        for row in rows
-        if row.available and row.percent is not None
+        NormalizedQuotaWindow(row.title or "quota", cast(float, row.percent), None)
+        for row in displayable_rows
     )
     if not windows:
         return None
-    row_updates = tuple(row.updated_at for row in rows if row.updated_at is not None)
+    if updated_at is not None:
+        if updated_at.utcoffset() is None:
+            return None
+        source_updated_at = updated_at
+    else:
+        row_updates: list[datetime] = []
+        for row in displayable_rows:
+            if row.updated_at is None or row.updated_at.utcoffset() is None:
+                return None
+            row_updates.append(row.updated_at)
+        source_updated_at = max(row_updates)
     return NormalizedQuotaSnapshot(
         provider=cast(LogicalProvider, provider),
         source="native",
@@ -701,7 +713,7 @@ def native_quota_snapshot(
         windows=windows,
         account_credits_usd=None,
         key_budget_usd=None,
-        updated_at=updated_at or (max(row_updates) if row_updates else datetime.now(UTC)),
+        updated_at=source_updated_at,
         freshness="stale" if stale else "fresh",
         provenance=None,
         details={},
@@ -716,10 +728,14 @@ def native_claude_snapshot(
     if outcome is None or outcome.state != PollState.SUCCESS or outcome.snapshot is None:
         return None
     snapshot = outcome.snapshot
+    try:
+        updated_at = datetime.fromtimestamp(snapshot.polled_at, UTC)
+    except (OSError, OverflowError, ValueError):
+        return None
     return native_quota_snapshot(
         "claude",
         rows,
-        updated_at=datetime.fromtimestamp(snapshot.polled_at, UTC),
+        updated_at=updated_at,
         stale=snapshot.is_stale or snapshot.data_source != "hook",
     )
 

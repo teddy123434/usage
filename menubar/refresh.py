@@ -24,6 +24,7 @@ import quota.window_keeper as window_keeper
 import talent_market_bridge
 from loaders.history_loader import UsageEntry
 from loaders.ocx_quota import (
+    Freshness,
     OcxQuotaSnapshot,
     load_ocx_quota,
     request_ocx_refresh,
@@ -408,13 +409,38 @@ def _project_selected_quota_sources(
             openrouter_snapshot is not None
             and openrouter_snapshot.freshness == "reauth_required"
         ):
-            state.openrouter = previous.openrouter or menubar_openrouter.unavailable_state()
-            state.provider_sources["openrouter"] = menubar_state.provider_source_state(
-                openrouter_snapshot, app.language, now=now
-            )
-        elif openrouter_snapshot is None and previous.openrouter is not None:
-            state.openrouter = previous.openrouter
-            _mark_previous_source_stale(state, previous, "openrouter", now=now)
+            previous_source = previous.provider_sources.get("openrouter")
+            if (
+                previous.openrouter is not None
+                and previous_source is not None
+                and previous_source.source == "ocx"
+                and _source_is_within_stale_window(previous_source, now)
+            ):
+                state.openrouter = previous.openrouter
+                state.provider_sources["openrouter"] = _source_with_freshness(
+                    previous_source,
+                    "reauth_required",
+                    state.language,
+                    now=now,
+                )
+            else:
+                state.openrouter = menubar_openrouter.unavailable_state()
+                state.provider_sources["openrouter"] = menubar_state.provider_source_state(
+                    openrouter_snapshot, app.language, now=now
+                )
+        elif openrouter_snapshot is None:
+            previous_source = previous.provider_sources.get("openrouter")
+            if (
+                previous.openrouter is not None
+                and previous_source is not None
+                and previous_source.source == "ocx"
+                and _source_is_within_stale_window(previous_source, now)
+            ):
+                state.openrouter = previous.openrouter
+                _mark_previous_source_stale(state, previous, "openrouter", now=now)
+            else:
+                state.openrouter = None
+                state.provider_sources.pop("openrouter", None)
         else:
             state.provider_sources.pop("openrouter", None)
     except Exception:
@@ -520,6 +546,7 @@ def _preserve_or_clear_provider(
                 previous.codex_session,
                 previous.codex_weekly,
             )
+            state.codex_credits = previous.codex_credits
             state.codex_current_account = previous.codex_current_account
         elif provider == "antigravity":
             state.agy_session, state.agy_weekly = previous.agy_session, previous.agy_weekly
@@ -540,6 +567,8 @@ def _preserve_or_clear_provider(
         elif provider == "codex":
             state.codex_session = missing("Session", menubar_state.CODEX_COLOR, state.language)
             state.codex_weekly = missing("Weekly", menubar_state.CODEX_COLOR, state.language)
+            state.codex_credits = None
+            state.codex_current_account = None
         elif provider == "antigravity":
             state.hide_agy = True
         elif provider == "grok":
@@ -556,20 +585,33 @@ def _mark_previous_source_stale(
     metadata = previous.provider_sources.get(provider)
     if metadata is None:
         return
+    freshness: Freshness = (
+        metadata.freshness if metadata.freshness == "reauth_required" else "stale"
+    )
+    state.provider_sources[provider] = _source_with_freshness(
+        metadata, freshness, state.language, now=now
+    )
+
+
+def _source_with_freshness(
+    metadata: menubar_state.ProviderSourceState,
+    freshness: Freshness,
+    language: str,
+    *,
+    now: float | None = None,
+) -> menubar_state.ProviderSourceState:
     current_time = time.time() if now is None else now
     age_text = (
         menubar_state.format_human_time(
-            max(0.0, current_time - metadata.updated_at.timestamp()), state.language
+            max(0.0, current_time - metadata.updated_at.timestamp()), language
         )
         if metadata.updated_at is not None
         else None
     )
-    state.provider_sources[provider] = menubar_state.ProviderSourceState(
+    return menubar_state.ProviderSourceState(
         source=metadata.source,
         label=metadata.label,
-        freshness=(
-            metadata.freshness if metadata.freshness == "reauth_required" else "stale"
-        ),
+        freshness=freshness,
         age_text=age_text,
         updated_at=metadata.updated_at,
     )

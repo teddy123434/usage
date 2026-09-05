@@ -3312,6 +3312,51 @@ def test_explicit_source_never_preserves_a_different_prior_source(
     assert "codex" not in state.provider_sources
 
 
+@pytest.mark.parametrize(
+    ("source", "previous_credits", "current_credits"),
+    [
+        ("ocx", None, {"balance": "$99.00", "unlimited": False}),
+        ("native", {"balance": "$7.00", "unlimited": False}, None),
+    ],
+)
+def test_retained_codex_restores_credits_from_the_same_source_state(
+    source: str,
+    previous_credits: menubar_state.CodexCreditsState | None,
+    current_credits: menubar_state.CodexCreditsState | None,
+) -> None:
+    now = datetime(2026, 9, 5, 12, tzinfo=UTC)
+    previous = menubar_state._empty_state("en")
+    previous.codex_session = menubar_state.QuotaRowState(
+        "Session", 12.0, "12% used", "Resets in 1h", menubar_state.CODEX_COLOR
+    )
+    previous.codex_credits = previous_credits
+    previous_account = (
+        menubar_state.CodexCurrentAccountState(True, "plus", ())
+        if source == "ocx"
+        else None
+    )
+    previous.codex_current_account = previous_account
+    previous.provider_sources["codex"] = menubar_state.ProviderSourceState(
+        cast(Any, source), source.upper(), "fresh", None, now - timedelta(hours=1)
+    )
+    state = menubar_state._empty_state("en")
+    state.codex_credits = current_credits
+    state.codex_current_account = menubar_state.CodexCurrentAccountState(False, "foreign", ())
+
+    menubar_refresh._preserve_or_clear_provider(
+        state,
+        previous,
+        "codex",
+        source,
+        now=now.timestamp(),
+    )
+
+    assert state.codex_session.percent == 12.0
+    assert state.codex_credits == previous_credits
+    assert state.codex_current_account is previous_account
+    assert state.provider_sources["codex"].source == source
+
+
 def test_ocx_selection_replaces_legacy_native_stale_markers(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -3383,6 +3428,7 @@ def test_openrouter_status_only_reauth_retains_previous_or_builds_placeholder(
             status["status"] = "reauth_required"
     now = datetime(2026, 9, 5, tzinfo=UTC)
     ocx = parse_ocx_quota_payload(payload, now)
+    monkeypatch.setattr(menubar_refresh.time, "time", lambda: now.timestamp())
     monkeypatch.setattr(menubar_refresh, "_quota_source_mode", lambda *_: "native")
     monkeypatch.setattr(menubar_refresh, "_quota_last_source", lambda *_: None)
 
@@ -3397,6 +3443,10 @@ def test_openrouter_status_only_reauth_retains_previous_or_builds_placeholder(
     previous.openrouter = menubar_state.OpenRouterState(
         "$5.00", "$5.00", "$10.00", "$5.00", None, None, None, None, False
     )
+    quota_updated_at = now - timedelta(hours=2)
+    previous.provider_sources["openrouter"] = menubar_state.ProviderSourceState(
+        "ocx", "OCX", "fresh", None, quota_updated_at
+    )
 
     class WithPrevious:
         language = "en"
@@ -3408,6 +3458,8 @@ def test_openrouter_status_only_reauth_retains_previous_or_builds_placeholder(
     )
     assert retained.openrouter is previous.openrouter
     assert retained.provider_sources["openrouter"].freshness == "reauth_required"
+    assert retained.provider_sources["openrouter"].updated_at == quota_updated_at
+    assert retained.provider_sources["openrouter"].age_text == "2h 0m"
 
     class WithoutPrevious:
         language = "en"
@@ -3420,3 +3472,83 @@ def test_openrouter_status_only_reauth_retains_previous_or_builds_placeholder(
     assert placeholder.openrouter is not None
     assert placeholder.openrouter.headline == "unavailable"
     assert placeholder.provider_sources["openrouter"].freshness == "reauth_required"
+
+
+def test_openrouter_reauth_discards_balance_older_than_twenty_four_hours(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from loaders.ocx_quota import parse_ocx_quota_payload
+
+    fixture = Path(__file__).parent / "fixtures" / "ocx_provider_quota.json"
+    payload = json.loads(fixture.read_text(encoding="utf-8"))
+    payload["reports"] = [
+        report for report in payload["reports"] if report["provider"] != "openrouter"
+    ]
+    for status in payload["statuses"]:
+        if status["provider"] == "openrouter":
+            status["status"] = "reauth_required"
+    now = datetime(2026, 9, 5, 12, tzinfo=UTC)
+    ocx = parse_ocx_quota_payload(payload, now)
+    monkeypatch.setattr(menubar_refresh.time, "time", lambda: now.timestamp())
+    monkeypatch.setattr(menubar_refresh, "_quota_source_mode", lambda *_: "native")
+    monkeypatch.setattr(menubar_refresh, "_quota_last_source", lambda *_: None)
+    previous = menubar_state._empty_state("en")
+    previous.openrouter = menubar_state.OpenRouterState(
+        "$5.00", "$5.00", "$10.00", "$5.00", None, None, None, None, False
+    )
+    previous.provider_sources["openrouter"] = menubar_state.ProviderSourceState(
+        "ocx", "OCX", "fresh", None, now - timedelta(hours=25)
+    )
+
+    class Delegate:
+        language = "en"
+        latest_state = previous
+
+    state = menubar_state._empty_state("en")
+    sources = menubar_refresh.RefreshSources(
+        {}, None, menubar_agy.AgyRefreshResult(None, True),
+        menubar_agy.fallback_projection("en"), menubar_grok.GrokRefreshResult(None, True),
+        menubar_grok.fallback_projection("en"), False, ocx,
+    )
+    menubar_refresh._project_selected_quota_sources(
+        cast(Any, Delegate()), sources, state, PollOutcome(PollState.TOKEN_ERROR)
+    )
+
+    assert state.openrouter is not previous.openrouter
+    assert state.openrouter is not None
+    assert state.openrouter.headline == "unavailable"
+    assert state.provider_sources["openrouter"].freshness == "reauth_required"
+
+
+def test_openrouter_missing_report_discards_balance_older_than_twenty_four_hours(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    now = datetime(2026, 9, 5, 12, tzinfo=UTC)
+    monkeypatch.setattr(menubar_refresh.time, "time", lambda: now.timestamp())
+    monkeypatch.setattr(menubar_refresh, "_quota_source_mode", lambda *_: "native")
+    monkeypatch.setattr(menubar_refresh, "_quota_last_source", lambda *_: None)
+    previous = menubar_state._empty_state("en")
+    previous.openrouter = menubar_state.OpenRouterState(
+        "$5.00", "$5.00", "$10.00", "$5.00", None, None, None, None, False
+    )
+    previous.provider_sources["openrouter"] = menubar_state.ProviderSourceState(
+        "ocx", "OCX", "fresh", None, now - timedelta(hours=25)
+    )
+
+    class Delegate:
+        language = "en"
+        latest_state = previous
+
+    state = menubar_state._empty_state("en")
+    sources = menubar_refresh.RefreshSources(
+        {}, None, menubar_agy.AgyRefreshResult(None, True),
+        menubar_agy.fallback_projection("en"), menubar_grok.GrokRefreshResult(None, True),
+        menubar_grok.fallback_projection("en"), False,
+        OcxQuotaSnapshot(MappingProxyType({}), now, now),
+    )
+    menubar_refresh._project_selected_quota_sources(
+        cast(Any, Delegate()), sources, state, PollOutcome(PollState.TOKEN_ERROR)
+    )
+
+    assert state.openrouter is None
+    assert "openrouter" not in state.provider_sources

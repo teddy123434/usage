@@ -10,7 +10,8 @@ from __future__ import annotations
 
 import ipaddress
 import os
-import re
+import stat
+import tomllib
 from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
@@ -29,7 +30,6 @@ _MAX_ROUTE_CONFIG_BYTES = 1024 * 1024
 _CODEX_MARKER = "# Auto-injected by opencodex"
 _GROK_BEGIN = "# >>> opencodex managed block — do not edit (removed by `ocx stop`) >>>"
 _GROK_END = "# <<< opencodex managed block <<<"
-_QUOTED_VALUE = re.compile(r'^\s*[A-Za-z_]+\s*=\s*"([^"\\]*)"\s*(?:#.*)?$')
 
 
 @dataclass(frozen=True, slots=True)
@@ -143,12 +143,32 @@ def load_route_facts(
 
 
 def _read_route_config(path: Path) -> str:
+    nofollow = getattr(os, "O_NOFOLLOW", None)
+    nonblock = getattr(os, "O_NONBLOCK", None)
+    if nofollow is None or nonblock is None:
+        return ""
     try:
-        with path.open("rb") as stream:
-            data = stream.read(_MAX_ROUTE_CONFIG_BYTES + 1)
-        if len(data) > _MAX_ROUTE_CONFIG_BYTES:
-            return ""
-        return data.decode("utf-8")
+        descriptor = os.open(path, os.O_RDONLY | nofollow | nonblock)
+        try:
+            file_info = os.fstat(descriptor)
+            if not stat.S_ISREG(file_info.st_mode):
+                return ""
+            if file_info.st_size > _MAX_ROUTE_CONFIG_BYTES:
+                return ""
+            chunks: list[bytes] = []
+            remaining = _MAX_ROUTE_CONFIG_BYTES + 1
+            while remaining > 0:
+                chunk = os.read(descriptor, remaining)
+                if not chunk:
+                    break
+                chunks.append(chunk)
+                remaining -= len(chunk)
+            data = b"".join(chunks)
+            if len(data) > _MAX_ROUTE_CONFIG_BYTES:
+                return ""
+            return data.decode("utf-8")
+        finally:
+            os.close(descriptor)
     except (OSError, UnicodeDecodeError):
         return ""
 
@@ -167,12 +187,10 @@ def _claude_route_facts(environment: Mapping[str, str]) -> dict[str, object]:
 
 
 def _codex_route_facts(content: str) -> dict[str, object]:
+    document = _parse_route_toml(content)
+    if document is None:
+        return {}
     lines = content.splitlines()
-    first_table = next(
-        (index for index, line in enumerate(lines) if line.lstrip().startswith("[")),
-        len(lines),
-    )
-    provider = _assignment_value(lines[:first_table], "model_provider")
     table_index = next(
         (
             index
@@ -182,13 +200,18 @@ def _codex_route_facts(content: str) -> dict[str, object]:
         -1,
     )
     marker_owned = table_index > 0 and lines[table_index - 1] == _CODEX_MARKER
-    base_url = _table_value(lines, table_index, "base_url") if table_index >= 0 else None
+    provider = document.get("model_provider")
+    providers = document.get("model_providers")
+    provider_row = providers.get("opencodex") if isinstance(providers, dict) else None
+    base_url = provider_row.get("base_url") if isinstance(provider_row, dict) else None
     if provider != "opencodex" or not marker_owned or not _is_loopback_url(base_url):
         return {}
     return {"ocx_owned_marker": True, "provider": provider, "base_url": base_url}
 
 
 def _grok_route_facts(content: str) -> dict[str, object]:
+    if _parse_route_toml(content) is None:
+        return {}
     lines = content.splitlines()
     begin_rows = [index for index, line in enumerate(lines) if line == _GROK_BEGIN]
     end_rows = [index for index, line in enumerate(lines) if line == _GROK_END]
@@ -207,30 +230,24 @@ def _grok_route_facts(content: str) -> dict[str, object]:
         ),
         -1,
     )
-    base_url = _table_value(region, table_index, "base_url") if table_index >= 0 else None
+    if table_index < 0:
+        return {}
+    region_document = _parse_route_toml("\n".join(region))
+    if region_document is None:
+        return {}
+    providers = region_document.get("model_providers")
+    provider_row = providers.get("opencodex") if isinstance(providers, dict) else None
+    base_url = provider_row.get("base_url") if isinstance(provider_row, dict) else None
     if not _is_loopback_url(base_url):
         return {}
     return {"managed_block_complete": True, "base_url": base_url}
 
 
-def _assignment_value(lines: list[str], key: str) -> str | None:
-    for line in lines:
-        if line.split("=", 1)[0].strip() != key:
-            continue
-        match = _QUOTED_VALUE.fullmatch(line)
-        return match.group(1) if match is not None else None
-    return None
-
-
-def _table_value(lines: list[str], start: int, key: str) -> str | None:
-    for line in lines[start + 1 :]:
-        if line.lstrip().startswith("["):
-            return None
-        if line.split("=", 1)[0].strip() != key:
-            continue
-        match = _QUOTED_VALUE.fullmatch(line)
-        return match.group(1) if match is not None else None
-    return None
+def _parse_route_toml(content: str) -> dict[str, object] | None:
+    try:
+        return tomllib.loads(content)
+    except tomllib.TOMLDecodeError:
+        return None
 
 
 def _is_loopback_url(value: object) -> bool:

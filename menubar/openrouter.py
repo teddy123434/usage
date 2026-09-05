@@ -46,8 +46,6 @@ def project_quota(
                 "reset_in",
                 time=format_human_time(max(0.0, reset_at.timestamp() - current_time), language),
             )
-        elif key.reset_interval is not None:
-            reset_text = key.reset_interval
     return OpenRouterState(
         headline=headline,
         account_remaining=_money(account.remaining) if account is not None else None,
@@ -59,7 +57,7 @@ def project_quota(
         reset_text=reset_text,
         key_unlimited=key.unlimited if key is not None else False,
         reset_interval=key.reset_interval if key is not None else None,
-        reset_at=(key.expires_at or key.reset_at) if key is not None else None,
+        reset_at=(key.reset_at or key.expires_at) if key is not None else None,
     )
 
 

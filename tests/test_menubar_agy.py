@@ -104,6 +104,17 @@ def test_project_quota_falls_back_to_most_constrained_group_without_gemini() -> 
     assert projection.weekly.percent == 87.5
 
 
+def test_native_adapter_rejects_invalid_fetch_timestamp() -> None:
+    quota = AgyQuotaResult(
+        groups=[_group("GEMINI MODELS", session_remaining=40, weekly_remaining=90)],
+        fetched_at="not-a-timestamp",
+    )
+    projection = menubar_agy.project_quota(quota, "en", now=1_767_225_600.0)
+
+    assert projection is not None
+    assert menubar_agy.native_snapshot(projection) is None
+
+
 def test_project_quota_marks_full_quota_without_a_countdown() -> None:
     quota = AgyQuotaResult(
         groups=[

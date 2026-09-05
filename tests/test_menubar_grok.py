@@ -33,6 +33,20 @@ def test_project_quota_builds_one_weekly_row() -> None:
     assert projection.weekly.percent_text == "18% used"
 
 
+def test_native_adapter_rejects_invalid_fetch_timestamp() -> None:
+    quota = GrokQuotaResult(
+        used_percent=18.0,
+        period_end="2026-09-01T15:50:08+00:00",
+        fetched_at="not-a-timestamp",
+        subscription_tier="SuperGrok Lite",
+    )
+    now = datetime(2026, 8, 26, 12, tzinfo=UTC).timestamp()
+    projection = menubar_grok.project_quota(quota, "en", now=now)
+
+    assert projection is not None
+    assert menubar_grok.native_snapshot(projection) is None
+
+
 def test_load_refresh_result_hides_card_when_grok_is_unavailable(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

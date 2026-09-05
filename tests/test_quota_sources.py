@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 from datetime import UTC, datetime
 from pathlib import Path
 from types import MappingProxyType
@@ -409,3 +410,123 @@ def test_load_route_facts_rejects_reversed_grok_managed_block(tmp_path: Path) ->
     )
 
     assert facts["grok"] == {}
+
+
+def test_load_route_facts_requires_grok_provider_table_inside_managed_block(
+    tmp_path: Path,
+) -> None:
+    grok = tmp_path / "grok.toml"
+    grok.write_text(
+        '[model_providers.opencodex]\n'
+        'base_url = "http://127.0.0.1:10100/v1"\n'
+        '# >>> opencodex managed block — do not edit (removed by `ocx stop`) >>>\n'
+        'marker = "empty"\n'
+        '# <<< opencodex managed block <<<\n',
+        encoding="utf-8",
+    )
+
+    facts = load_route_facts(
+        codex_config_path=tmp_path / "missing-codex.toml",
+        grok_config_path=grok,
+        env={},
+    )
+
+    assert facts["grok"] == {}
+
+
+def test_load_route_facts_requires_grok_base_url_inside_managed_block(
+    tmp_path: Path,
+) -> None:
+    grok = tmp_path / "grok.toml"
+    grok.write_text(
+        '# >>> opencodex managed block — do not edit (removed by `ocx stop`) >>>\n'
+        '[model_providers.opencodex]\n'
+        '# <<< opencodex managed block <<<\n'
+        'base_url = "http://127.0.0.1:10100/v1"\n',
+        encoding="utf-8",
+    )
+
+    facts = load_route_facts(
+        codex_config_path=tmp_path / "missing-codex.toml",
+        grok_config_path=grok,
+        env={},
+    )
+
+    assert facts["grok"] == {}
+
+
+def test_load_route_facts_rejects_symlinked_config(tmp_path: Path) -> None:
+    target = tmp_path / "target.toml"
+    target.write_text(
+        'model_provider = "opencodex"\n'
+        '# Auto-injected by opencodex\n'
+        '[model_providers.opencodex]\n'
+        'base_url = "http://127.0.0.1:10100/v1"\n',
+        encoding="utf-8",
+    )
+    codex = tmp_path / "codex.toml"
+    codex.symlink_to(target)
+
+    facts = load_route_facts(
+        codex_config_path=codex,
+        grok_config_path=tmp_path / "missing-grok.toml",
+        env={},
+    )
+
+    assert facts["codex"] == {}
+
+
+@pytest.mark.skipif(not hasattr(os, "mkfifo"), reason="FIFO is not supported")
+def test_load_route_facts_rejects_fifo_without_blocking(tmp_path: Path) -> None:
+    codex = tmp_path / "codex.fifo"
+    os.mkfifo(codex)
+
+    facts = load_route_facts(
+        codex_config_path=codex,
+        grok_config_path=tmp_path / "missing-grok.toml",
+        env={},
+    )
+
+    assert facts["codex"] == {}
+
+
+@pytest.mark.parametrize(
+    ("provider", "invalid_prefix"),
+    [
+        ("codex", "duplicate = 1\nduplicate = 2\n"),
+        ("codex", "invalid = [\n"),
+        ("grok", "duplicate = 1\nduplicate = 2\n"),
+        ("grok", "invalid = [\n"),
+    ],
+)
+def test_load_route_facts_rejects_invalid_toml_anywhere(
+    tmp_path: Path, provider: str, invalid_prefix: str
+) -> None:
+    codex_content = (
+        'model_provider = "opencodex"\n'
+        '# Auto-injected by opencodex\n'
+        '[model_providers.opencodex]\n'
+        'base_url = "http://127.0.0.1:10100/v1"\n'
+    )
+    grok_content = (
+        '# >>> opencodex managed block — do not edit (removed by `ocx stop`) >>>\n'
+        '[model_providers.opencodex]\n'
+        'base_url = "http://127.0.0.1:10100/v1"\n'
+        '# <<< opencodex managed block <<<\n'
+    )
+    codex = tmp_path / "codex.toml"
+    grok = tmp_path / "grok.toml"
+    codex.write_text(
+        invalid_prefix + codex_content if provider == "codex" else codex_content,
+        encoding="utf-8",
+    )
+    grok.write_text(
+        invalid_prefix + grok_content if provider == "grok" else grok_content,
+        encoding="utf-8",
+    )
+
+    facts = load_route_facts(
+        codex_config_path=codex, grok_config_path=grok, env={}
+    )
+
+    assert facts[provider] == {}

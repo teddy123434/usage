@@ -16,6 +16,7 @@ from loaders import codex_loader, grok_loader
 from loaders.history_loader import UsageEntry
 from menubar import state as menubar_state
 from quota.burn_rate import BurnRateTracker
+from usage_client import PollOutcome, PollState, UsageSnapshot
 
 
 def _patch_history_sources(
@@ -337,6 +338,61 @@ def test_native_adapter_retains_the_loader_timestamp() -> None:
 
     assert snapshot is not None
     assert snapshot.updated_at == updated_at
+
+
+@pytest.mark.parametrize("updated_at", [None, datetime(2026, 9, 5)])
+def test_native_adapter_rejects_rows_without_a_valid_loader_timestamp(
+    updated_at: datetime | None,
+) -> None:
+    row = menubar_state.QuotaRowState(
+        "Weekly",
+        25.0,
+        "25% used",
+        "Resets in 1d",
+        menubar_state.CODEX_COLOR,
+        updated_at=updated_at,
+    )
+
+    snapshot = menubar_state.native_quota_snapshot("codex", (row,))
+
+    assert snapshot is None
+
+
+def test_native_adapter_fails_closed_for_mixed_timestamp_awareness() -> None:
+    aware = menubar_state.QuotaRowState(
+        "Session",
+        10.0,
+        "10% used",
+        "Resets in 1h",
+        menubar_state.CODEX_COLOR,
+        updated_at=datetime(2026, 9, 5, tzinfo=UTC),
+    )
+    naive = menubar_state.QuotaRowState(
+        "Weekly",
+        20.0,
+        "20% used",
+        "Resets in 1d",
+        menubar_state.CODEX_COLOR,
+        updated_at=datetime(2026, 9, 5),
+    )
+
+    snapshot = menubar_state.native_quota_snapshot("codex", (aware, naive))
+
+    assert snapshot is None
+
+
+def test_native_claude_adapter_rejects_non_finite_poll_timestamp() -> None:
+    outcome = PollOutcome(
+        PollState.SUCCESS,
+        UsageSnapshot(10, 1.0, 20, 2.0, "ok", float("nan")),
+    )
+    row = menubar_state.QuotaRowState(
+        "Session", 10.0, "10% used", "Resets in 1h", menubar_state.CLAUDE_COLOR
+    )
+
+    snapshot = menubar_state.native_claude_snapshot(outcome, (row, row))
+
+    assert snapshot is None
 
 
 def test_source_age_is_recomputed_from_retained_updated_at() -> None:

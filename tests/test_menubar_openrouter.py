@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import json
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 from loaders.ocx_quota import KeyBudgetUsd, NormalizedQuotaSnapshot, parse_ocx_quota_payload
@@ -79,7 +79,7 @@ def test_project_openrouter_uses_explicit_unlimited_headline_without_zero_placeh
     assert state.key_remaining is None
     assert state.key_percent is None
     assert state.reset_interval == "none"
-    assert state.reset_text == "none"
+    assert state.reset_text is None
 
 
 def test_project_openrouter_keeps_cadence_when_no_reset_timestamp_exists() -> None:
@@ -102,4 +102,32 @@ def test_project_openrouter_keeps_cadence_when_no_reset_timestamp_exists() -> No
     assert state is not None
     assert state.reset_interval == "monthly"
     assert state.reset_at is None
-    assert state.reset_text == "monthly"
+    assert state.reset_text is None
+
+
+def test_project_openrouter_uses_reset_timestamp_before_expiry() -> None:
+    snapshot = _snapshot()
+    reset_at = datetime(2026, 9, 6, tzinfo=UTC)
+    expires_at = reset_at + timedelta(days=30)
+    with_both = NormalizedQuotaSnapshot(
+        provider="openrouter",
+        source="ocx",
+        source_label="OCX",
+        windows=(),
+        account_credits_usd=None,
+        key_budget_usd=KeyBudgetUsd(
+            2, 10, 8, 20, expires_at, False, reset_at, "monthly"
+        ),
+        updated_at=snapshot.updated_at,
+        freshness="fresh",
+        provenance=snapshot.provenance,
+        details={},
+    )
+
+    state = openrouter.project_quota(
+        with_both, "en", now=datetime(2026, 9, 5, tzinfo=UTC).timestamp()
+    )
+
+    assert state is not None
+    assert state.reset_at == reset_at
+    assert state.reset_text == "Resets in 1d 0h"
