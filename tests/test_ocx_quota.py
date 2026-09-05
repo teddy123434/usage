@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import io
 import json
 import math
 import os
@@ -649,3 +650,290 @@ def test_request_refresh_returns_before_daemon_finishes(monkeypatch: pytest.Monk
     assert time.monotonic() - started < 0.1
     release.set()
     assert ocx_quota._wait_for_idle_for_tests(timeout=1)
+
+
+def test_refresh_request_overlapping_cached_read_is_coalesced_not_dropped(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    entered = threading.Event()
+    release = threading.Event()
+    calls: list[bool] = []
+
+    def fake_run(*, force: bool, timeout: float) -> bytes:
+        calls.append(force)
+        if not force:
+            entered.set()
+            release.wait(timeout=1)
+        return json.dumps(_payload()).encode()
+
+    monkeypatch.setattr(ocx_quota, "_invoke_ocx", fake_run)
+    reader = threading.Thread(target=ocx_quota.load_ocx_quota)
+    reader.start()
+    assert entered.wait(timeout=1)
+
+    started = time.monotonic()
+    ocx_quota.request_ocx_refresh()
+    ocx_quota.request_ocx_refresh()
+    assert time.monotonic() - started < 0.1
+    release.set()
+    reader.join(timeout=1)
+    assert ocx_quota._wait_for_idle_for_tests(timeout=1)
+
+    assert calls == [False, True]
+
+
+def test_forced_refresh_interval_is_measured_from_start_even_after_failure(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls = 0
+    monotonic_now = 100.0
+
+    def failing_run(*, force: bool, timeout: float) -> bytes:
+        nonlocal calls
+        calls += 1
+        raise ocx_quota.OcxCommandError("fixture failure")
+
+    monkeypatch.setattr(ocx_quota, "_invoke_ocx", failing_run)
+    monkeypatch.setattr(ocx_quota.time, "monotonic", lambda: monotonic_now)
+
+    ocx_quota.request_ocx_refresh()
+    assert ocx_quota._wait_for_idle_for_tests(timeout=1)
+    monotonic_now = 399.999
+    ocx_quota.request_ocx_refresh()
+    assert calls == 1
+    monotonic_now = 400.0
+    ocx_quota.request_ocx_refresh()
+    assert ocx_quota._wait_for_idle_for_tests(timeout=1)
+
+    assert calls == 2
+
+
+class _LifecycleProcess:
+    def __init__(self, *, waits: list[object] | None = None) -> None:
+        self.stdout = io.BytesIO(b"{}")
+        self.stderr = io.BytesIO()
+        self.returncode: int | None = None
+        self.calls: list[str] = []
+        self._waits = list(waits or [0])
+
+    def poll(self) -> int | None:
+        self.calls.append("poll")
+        return self.returncode
+
+    def terminate(self) -> None:
+        self.calls.append("terminate")
+
+    def kill(self) -> None:
+        self.calls.append("kill")
+
+    def wait(self, timeout: float | None = None) -> int:
+        self.calls.append(f"wait:{timeout}")
+        outcome = self._waits.pop(0) if self._waits else 0
+        if isinstance(outcome, BaseException):
+            raise outcome
+        self.returncode = int(outcome)
+        return self.returncode
+
+
+def test_reader_start_exception_terminates_and_reaps_child(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    process = _LifecycleProcess()
+    starts = 0
+
+    class FakeThread:
+        daemon = True
+
+        def __init__(self, *, target: object, args: object, daemon: bool) -> None:
+            self.target = target
+            self.args = args
+
+        def start(self) -> None:
+            nonlocal starts
+            starts += 1
+            if starts == 2:
+                raise RuntimeError("fixture thread start failure")
+
+        def join(self, timeout: float | None = None) -> None:
+            return
+
+        def is_alive(self) -> bool:
+            return False
+
+    monkeypatch.setattr(ocx_quota.subprocess, "Popen", lambda *args, **kwargs: process)
+    monkeypatch.setattr(ocx_quota.threading, "Thread", FakeThread)
+
+    with pytest.raises(RuntimeError, match="thread start"):
+        ocx_quota._run_ocx_command(tmp_path / "ocx", force=False, timeout=1)
+
+    assert "terminate" in process.calls
+    assert process.calls[-1].startswith("wait:")
+    assert process.returncode == 0
+    assert process.stdout.closed and process.stderr.closed
+
+
+def test_deadline_exception_terminates_and_reaps_child(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    process = _LifecycleProcess()
+    monkeypatch.setattr(ocx_quota.subprocess, "Popen", lambda *args, **kwargs: process)
+    monkeypatch.setattr(
+        ocx_quota.time,
+        "monotonic",
+        lambda: (_ for _ in ()).throw(KeyboardInterrupt()),
+    )
+
+    with pytest.raises(KeyboardInterrupt):
+        ocx_quota._run_ocx_command(tmp_path / "ocx", force=False, timeout=1)
+
+    assert "terminate" in process.calls
+    assert process.returncode == 0
+    assert process.stdout.closed and process.stderr.closed
+
+
+def test_cleanup_escalates_terminate_wait_kill_wait_and_confirms_reap() -> None:
+    timeout = ocx_quota.subprocess.TimeoutExpired("ocx", 0.5)
+    process = _LifecycleProcess(waits=[timeout, 0])
+
+    assert ocx_quota._stop_process(process) is True
+    assert process.calls == ["poll", "terminate", "wait:0.5", "kill", "wait:0.5"]
+    assert process.returncode == 0
+
+
+def test_cleanup_reports_unreaped_only_after_kill_wait_also_fails() -> None:
+    first_timeout = ocx_quota.subprocess.TimeoutExpired("ocx", 0.5)
+    second_timeout = ocx_quota.subprocess.TimeoutExpired("ocx", 0.5)
+    process = _LifecycleProcess(waits=[first_timeout, second_timeout])
+
+    assert ocx_quota._stop_process(process) is False
+    assert process.calls == ["poll", "terminate", "wait:0.5", "kill", "wait:0.5"]
+
+
+def test_runner_surfaces_unreaped_child_as_fail_closed_error(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    timeout = ocx_quota.subprocess.TimeoutExpired("ocx", 0.5)
+    process = _LifecycleProcess(waits=[timeout, timeout])
+    monkeypatch.setattr(ocx_quota.subprocess, "Popen", lambda *args, **kwargs: process)
+    monkeypatch.setattr(
+        ocx_quota.time,
+        "monotonic",
+        lambda: (_ for _ in ()).throw(RuntimeError("fixture deadline failure")),
+    )
+
+    with pytest.raises(ocx_quota.OcxUnreapedProcessError):
+        ocx_quota._run_ocx_command(tmp_path / "ocx", force=False, timeout=1)
+
+    assert "kill" in process.calls
+    assert process.stdout.closed and process.stderr.closed
+
+
+def test_unreaped_child_keeps_coordinator_blocked(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls = 0
+
+    def unreaped(*, force: bool) -> object:
+        nonlocal calls
+        calls += 1
+        raise ocx_quota.OcxUnreapedProcessError("fixture unreaped")
+
+    monkeypatch.setattr(ocx_quota, "_refresh_cache", unreaped)
+
+    ocx_quota.load_ocx_quota()
+    ocx_quota.request_ocx_refresh()
+
+    assert calls == 1
+    assert not ocx_quota._wait_for_idle_for_tests(timeout=0.01)
+
+
+def test_waiter_receives_its_flight_result_when_followup_refresh_starts(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    cached_entered = threading.Event()
+    cached_release = threading.Event()
+    forced_entered = threading.Event()
+    forced_release = threading.Event()
+
+    def quota_payload(percent: float) -> bytes:
+        payload = _payload()
+        reports = payload["reports"]
+        assert isinstance(reports, list)
+        report = reports[0]
+        assert isinstance(report, dict)
+        quota = report["quota"]
+        assert isinstance(quota, dict)
+        quota["fiveHourPercent"] = percent
+        return json.dumps(payload).encode()
+
+    def fake_run(*, force: bool, timeout: float) -> bytes:
+        if force:
+            forced_entered.set()
+            forced_release.wait(timeout=1)
+            return quota_payload(91)
+        cached_entered.set()
+        cached_release.wait(timeout=1)
+        return quota_payload(13)
+
+    monkeypatch.setattr(ocx_quota, "_invoke_ocx", fake_run)
+    old_waiter_blocked = threading.Event()
+    real_wait_for_flight = ocx_quota._wait_for_flight_locked
+
+    def recording_wait_for_flight(flight: object) -> None:
+        old_waiter_blocked.set()
+        real_wait_for_flight(flight)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(ocx_quota, "_wait_for_flight_locked", recording_wait_for_flight)
+    owner = threading.Thread(target=ocx_quota.load_ocx_quota)
+    owner.start()
+    assert cached_entered.wait(timeout=1)
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        old_waiter = pool.submit(ocx_quota.load_ocx_quota)
+        assert old_waiter_blocked.wait(timeout=1)
+        ocx_quota.request_ocx_refresh()
+        cached_release.set()
+        assert forced_entered.wait(timeout=1)
+        old_result = old_waiter.result(timeout=0.5)
+        new_waiter = pool.submit(ocx_quota.load_ocx_quota)
+        assert not new_waiter.done()
+        forced_release.set()
+        new_result = new_waiter.result(timeout=1)
+
+    owner.join(timeout=1)
+    assert old_result.providers["codex"].windows[0].percent == 13
+    assert new_result.providers["codex"].windows[0].percent == 91
+
+
+@pytest.mark.parametrize("failure_point", ["fchmod", "fdopen"])
+def test_cache_temp_fd_is_closed_and_unlinked_on_setup_failure(
+    monkeypatch: pytest.MonkeyPatch, failure_point: str
+) -> None:
+    snapshot = parse_ocx_quota_payload(_payload(), _NOW)
+    real_mkstemp = ocx_quota.tempfile.mkstemp
+    captured: dict[str, object] = {}
+
+    def recording_mkstemp(*args: object, **kwargs: object) -> tuple[int, str]:
+        fd, path = real_mkstemp(*args, **kwargs)
+        captured.update(fd=fd, path=path)
+        return fd, path
+
+    monkeypatch.setattr(ocx_quota.tempfile, "mkstemp", recording_mkstemp)
+    if failure_point == "fchmod":
+        monkeypatch.setattr(
+            ocx_quota.os,
+            "fchmod",
+            lambda *_args: (_ for _ in ()).throw(OSError("fixture fchmod failure")),
+        )
+    else:
+        monkeypatch.setattr(
+            ocx_quota.os,
+            "fdopen",
+            lambda *_args, **_kwargs: (_ for _ in ()).throw(OSError("fixture fdopen failure")),
+        )
+
+    with pytest.raises(OSError, match="fixture"):
+        ocx_quota._write_cache(snapshot)
+
+    with pytest.raises(OSError):
+        os.fstat(int(captured["fd"]))
+    assert not Path(str(captured["path"])).exists()

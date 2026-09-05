@@ -37,12 +37,18 @@ _CACHE_SCHEMA_VERSION = 1
 _FRESH_FOR = timedelta(minutes=10)
 _STALE_FOR = timedelta(hours=24)
 _RUN_CONDITION = threading.Condition()
-_run_in_flight = False
+_flight_generation = 0
+_active_flight: _Flight | None = None
+_pending_forced_refresh = False
 _last_forced_started: float | None = None
 
 
 class OcxCommandError(RuntimeError):
     """An OCX subprocess failed without exposing command output."""
+
+
+class OcxUnreapedProcessError(RuntimeError):
+    """A failed child could not be confirmed reaped; execution must stay blocked."""
 
 type LogicalProvider = Literal["claude", "codex", "antigravity", "grok", "openrouter"]
 type QuotaSource = Literal["native", "ocx"]
@@ -107,6 +113,15 @@ class OcxQuotaSnapshot:
     cache_written_at: datetime
 
 
+@dataclass(slots=True)
+class _Flight:
+    generation: int
+    force: bool
+    complete: bool = False
+    reaped: bool = True
+    result: OcxQuotaSnapshot | None = None
+
+
 def load_ocx_quota(*, request_refresh: bool = False) -> OcxQuotaSnapshot:
     """Load a normalized OCX quota snapshot without exposing OCX credentials."""
     if request_refresh:
@@ -114,57 +129,134 @@ def load_ocx_quota(*, request_refresh: bool = False) -> OcxQuotaSnapshot:
         return _read_cache() or _empty_snapshot()
 
     with _RUN_CONDITION:
-        global _run_in_flight
-        if _run_in_flight:
-            _RUN_CONDITION.wait_for(lambda: not _run_in_flight)
-            return _read_cache() or _empty_snapshot()
-        _run_in_flight = True
-
+        if _active_flight is not None:
+            flight = _active_flight
+            if not flight.complete:
+                _wait_for_flight_locked(flight)
+            return _flight_result(flight)
+        flight = _new_flight_locked(force=False)
     try:
-        return _refresh_cache(force=False) or _read_cache() or _empty_snapshot()
-    finally:
-        with _RUN_CONDITION:
-            _run_in_flight = False
-            _RUN_CONDITION.notify_all()
+        refreshed = _refresh_cache(force=False)
+    except OcxUnreapedProcessError:
+        result = _fallback_snapshot()
+        _finish_flight(flight, result=result, reaped=False)
+        return result
+    except BaseException:
+        _finish_flight(flight, result=_fallback_snapshot(), reaped=True)
+        raise
+    result = refreshed or _fallback_snapshot()
+    _finish_flight(flight, result=result, reaped=True)
+    return result
 
 
 def request_ocx_refresh() -> None:
-    """Start one rate-limited forced refresh in a daemon thread and return."""
+    """Start or coalesce one rate-limited forced refresh and return immediately.
+
+    The 300-second interval begins when the forced subprocess is scheduled, even
+    when that attempt later fails. A request overlapping a normal read is kept as
+    one pending refresh and starts immediately after that read is fully reaped.
+    """
     now = time.monotonic()
     with _RUN_CONDITION:
-        global _run_in_flight, _last_forced_started
-        if _run_in_flight:
+        global _pending_forced_refresh, _last_forced_started
+        if _active_flight is not None:
+            if not _active_flight.reaped or _active_flight.force:
+                return
+            if _forced_refresh_throttled(now):
+                return
+            _pending_forced_refresh = True
             return
-        if (
-            _last_forced_started is not None
-            and now - _last_forced_started < FORCED_REFRESH_INTERVAL_S
-        ):
+        if _forced_refresh_throttled(now):
             return
-        _run_in_flight = True
+        flight = _new_flight_locked(force=True)
         _last_forced_started = now
 
+    _start_forced_thread(flight, propagate=True)
+
+
+def _new_flight_locked(*, force: bool) -> _Flight:
+    global _active_flight, _flight_generation
+    _flight_generation += 1
+    flight = _Flight(generation=_flight_generation, force=force)
+    _active_flight = flight
+    return flight
+
+
+def _forced_refresh_throttled(now: float) -> bool:
+    return (
+        _last_forced_started is not None
+        and now - _last_forced_started < FORCED_REFRESH_INTERVAL_S
+    )
+
+
+def _start_forced_thread(flight: _Flight, *, propagate: bool) -> None:
     try:
         thread = threading.Thread(
             target=_forced_refresh_worker,
+            args=(flight,),
             name="usage-ocx-refresh",
             daemon=True,
         )
         thread.start()
     except BaseException:
-        with _RUN_CONDITION:
-            _run_in_flight = False
-            _RUN_CONDITION.notify_all()
-        raise
+        _finish_flight(flight, result=_fallback_snapshot(), reaped=True)
+        if propagate:
+            raise
 
 
-def _forced_refresh_worker() -> None:
+def _forced_refresh_worker(flight: _Flight) -> None:
     try:
-        _refresh_cache(force=True)
-    finally:
-        with _RUN_CONDITION:
-            global _run_in_flight
-            _run_in_flight = False
-            _RUN_CONDITION.notify_all()
+        refreshed = _refresh_cache(force=True)
+    except OcxUnreapedProcessError:
+        _finish_flight(flight, result=_fallback_snapshot(), reaped=False)
+        return
+    except BaseException:
+        _finish_flight(flight, result=_fallback_snapshot(), reaped=True)
+        raise
+    result = refreshed or _fallback_snapshot()
+    _finish_flight(flight, result=result, reaped=True)
+
+
+def _finish_flight(
+    flight: _Flight,
+    *,
+    result: OcxQuotaSnapshot,
+    reaped: bool,
+) -> None:
+    followup: _Flight | None = None
+    with _RUN_CONDITION:
+        global _active_flight, _pending_forced_refresh, _last_forced_started
+        flight.result = result
+        flight.reaped = reaped
+        flight.complete = True
+        if _active_flight is flight and reaped:
+            _active_flight = None
+            if not flight.force and _pending_forced_refresh:
+                _pending_forced_refresh = False
+                try:
+                    forced_started = time.monotonic()
+                except BaseException:
+                    forced_started = None
+                if forced_started is not None:
+                    followup = _new_flight_locked(force=True)
+                    _last_forced_started = forced_started
+        _RUN_CONDITION.notify_all()
+    if followup is not None:
+        _start_forced_thread(followup, propagate=False)
+
+
+def _flight_result(flight: _Flight) -> OcxQuotaSnapshot:
+    if not flight.complete or flight.result is None:
+        raise RuntimeError("OCX flight result requested before completion")
+    return flight.result
+
+
+def _wait_for_flight_locked(flight: _Flight) -> None:
+    _RUN_CONDITION.wait_for(lambda: flight.complete)
+
+
+def _fallback_snapshot() -> OcxQuotaSnapshot:
+    return _read_cache() or _empty_snapshot()
 
 
 def _refresh_cache(*, force: bool) -> OcxQuotaSnapshot | None:
@@ -214,83 +306,119 @@ def _run_ocx_command(executable: Path, *, force: bool, timeout: float) -> bytes:
         )
     except OSError as exc:
         raise OcxCommandError("failed to start OCX") from exc
-    if process.stdout is None or process.stderr is None:
-        _stop_process(process)
-        raise OcxCommandError("failed to capture OCX output")
-
-    exceeded = threading.Event()
-    stdout_parts: list[bytes] = []
-    stderr_parts: list[bytes] = []
-    readers = (
-        threading.Thread(
-            target=_read_bounded_stream,
-            args=(process.stdout, stdout_parts, exceeded),
-            daemon=True,
-        ),
-        threading.Thread(
-            target=_read_bounded_stream,
-            args=(process.stderr, stderr_parts, exceeded),
-            daemon=True,
-        ),
-    )
-    for reader in readers:
-        reader.start()
-
-    deadline = time.monotonic() + timeout
+    stdout: IO[bytes] | None = None
+    stderr: IO[bytes] | None = None
+    readers: list[threading.Thread] = []
     try:
+        stdout = process.stdout
+        stderr = process.stderr
+        if stdout is None or stderr is None:
+            raise OcxCommandError("failed to capture OCX output")
+        exceeded = threading.Event()
+        read_failed = threading.Event()
+        stdout_parts: list[bytes] = []
+        stderr_parts: list[bytes] = []
+        candidates = (
+            threading.Thread(
+                target=_read_bounded_stream,
+                args=(stdout, stdout_parts, exceeded, read_failed),
+                daemon=True,
+            ),
+            threading.Thread(
+                target=_read_bounded_stream,
+                args=(stderr, stderr_parts, exceeded, read_failed),
+                daemon=True,
+            ),
+        )
+        for reader in candidates:
+            reader.start()
+            readers.append(reader)
+
+        deadline = time.monotonic() + timeout
         while process.poll() is None:
             if exceeded.is_set():
                 raise OcxCommandError("OCX output exceeded the accepted size")
+            if read_failed.is_set():
+                raise OcxCommandError("failed to read OCX output")
             remaining = deadline - time.monotonic()
             if remaining <= 0:
                 raise OcxCommandError("OCX command timed out")
             exceeded.wait(min(0.01, remaining))
+        try:
+            process.wait(timeout=0.5)
+        except (OSError, subprocess.TimeoutExpired) as exc:
+            raise OcxCommandError("failed to reap OCX command") from exc
         for reader in readers:
             reader.join(timeout=0.5)
         if any(reader.is_alive() for reader in readers):
             raise OcxCommandError("OCX output streams did not close")
         if exceeded.is_set():
             raise OcxCommandError("OCX output exceeded the accepted size")
+        if read_failed.is_set():
+            raise OcxCommandError("failed to read OCX output")
         if process.returncode != 0:
             raise OcxCommandError("OCX command failed")
         return b"".join(stdout_parts)
-    except BaseException:
-        _stop_process(process)
+    except BaseException as exc:
+        reaped = _stop_process(process)
+        _close_process_pipes(stdout, stderr)
         for reader in readers:
-            reader.join(timeout=0.5)
+            with contextlib.suppress(BaseException):
+                reader.join(timeout=0.5)
+        if not reaped:
+            raise OcxUnreapedProcessError("OCX child could not be reaped") from exc
         raise
     finally:
-        process.stdout.close()
-        process.stderr.close()
+        _close_process_pipes(stdout, stderr)
 
 
-def _read_bounded_stream(stream: IO[bytes], parts: list[bytes], exceeded: threading.Event) -> None:
-    total = 0
-    while not exceeded.is_set():
-        chunk = stream.read(min(64 * 1024, MAX_OUTPUT_BYTES - total + 1))
-        if not chunk:
-            return
-        total += len(chunk)
-        if total > MAX_OUTPUT_BYTES:
-            exceeded.set()
-            return
-        parts.append(chunk)
+def _read_bounded_stream(
+    stream: IO[bytes],
+    parts: list[bytes],
+    exceeded: threading.Event,
+    read_failed: threading.Event,
+) -> None:
+    try:
+        total = 0
+        while not exceeded.is_set():
+            chunk = stream.read(min(64 * 1024, MAX_OUTPUT_BYTES - total + 1))
+            if not chunk:
+                return
+            total += len(chunk)
+            if total > MAX_OUTPUT_BYTES:
+                exceeded.set()
+                return
+            parts.append(chunk)
+    except (OSError, ValueError):
+        read_failed.set()
 
 
-def _stop_process(process: subprocess.Popen[bytes]) -> None:
-    if process.poll() is not None:
-        with contextlib.suppress(OSError):
-            process.wait(timeout=0.5)
-        return
-    with contextlib.suppress(OSError):
-        process.terminate()
+def _stop_process(process: subprocess.Popen[bytes]) -> bool:
+    try:
+        running = process.poll() is None
+    except BaseException:
+        running = True
+    if running:
+        with contextlib.suppress(BaseException):
+            process.terminate()
     try:
         process.wait(timeout=0.5)
-    except (OSError, subprocess.TimeoutExpired):
-        with contextlib.suppress(OSError):
+        return True
+    except BaseException:
+        with contextlib.suppress(BaseException):
             process.kill()
-        with contextlib.suppress(OSError, subprocess.TimeoutExpired):
+        try:
             process.wait(timeout=0.5)
+            return True
+        except BaseException:
+            return False
+
+
+def _close_process_pipes(stdout: IO[bytes] | None, stderr: IO[bytes] | None) -> None:
+    for stream in (stdout, stderr):
+        if stream is not None:
+            with contextlib.suppress(BaseException):
+                stream.close()
 
 
 def _write_cache(snapshot: OcxQuotaSnapshot) -> None:
@@ -303,11 +431,14 @@ def _write_cache(snapshot: OcxQuotaSnapshot) -> None:
     ).encode()
     path = OCX_CACHE_PATH
     tmp_path: str | None = None
+    fd: int | None = None
     try:
         path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
         fd, tmp_path = tempfile.mkstemp(prefix=f".{path.name}.", suffix=".tmp", dir=path.parent)
         os.fchmod(fd, 0o600)
-        with os.fdopen(fd, "wb") as file:
+        file = os.fdopen(fd, "wb")
+        fd = None
+        with file:
             file.write(encoded)
             file.flush()
             os.fsync(file.fileno())
@@ -316,6 +447,9 @@ def _write_cache(snapshot: OcxQuotaSnapshot) -> None:
         path.chmod(0o600)
         _fsync_directory(path.parent)
     finally:
+        if fd is not None:
+            with contextlib.suppress(OSError):
+                os.close(fd)
         if tmp_path is not None:
             with contextlib.suppress(OSError):
                 os.unlink(tmp_path)
@@ -597,16 +731,18 @@ def _utcnow() -> datetime:
 
 
 def _reset_runtime_state_for_tests() -> None:
-    global _run_in_flight, _last_forced_started
+    global _active_flight, _flight_generation, _last_forced_started, _pending_forced_refresh
     with _RUN_CONDITION:
-        _run_in_flight = False
+        _active_flight = None
+        _flight_generation = 0
         _last_forced_started = None
+        _pending_forced_refresh = False
         _RUN_CONDITION.notify_all()
 
 
 def _wait_for_idle_for_tests(timeout: float) -> bool:
     with _RUN_CONDITION:
-        return _RUN_CONDITION.wait_for(lambda: not _run_in_flight, timeout=timeout)
+        return _RUN_CONDITION.wait_for(lambda: _active_flight is None, timeout=timeout)
 
 
 _PROVIDER_MAP: Mapping[str, LogicalProvider] = MappingProxyType(
