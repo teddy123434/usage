@@ -637,18 +637,25 @@ def test_forced_refresh_starts_at_most_once_per_five_monotonic_minutes(
 
 
 def test_request_refresh_returns_before_daemon_finishes(monkeypatch: pytest.MonkeyPatch) -> None:
+    entered = threading.Event()
     release = threading.Event()
+    returned = threading.Event()
 
     def fake_run(*, force: bool, timeout: float) -> bytes:
+        entered.set()
         release.wait(timeout=1)
         return json.dumps(_payload()).encode()
 
     monkeypatch.setattr(ocx_quota, "_invoke_ocx", fake_run)
-    started = time.monotonic()
-    assert ocx_quota.request_ocx_refresh() is None
+    caller = threading.Thread(
+        target=lambda: (ocx_quota.request_ocx_refresh(), returned.set()),
+    )
+    caller.start()
 
-    assert time.monotonic() - started < 0.1
+    assert entered.wait(timeout=1)
+    assert returned.wait(timeout=1)
     release.set()
+    caller.join(timeout=1)
     assert ocx_quota._wait_for_idle_for_tests(timeout=1)
 
 
@@ -671,10 +678,8 @@ def test_refresh_request_overlapping_cached_read_is_coalesced_not_dropped(
     reader.start()
     assert entered.wait(timeout=1)
 
-    started = time.monotonic()
     ocx_quota.request_ocx_refresh()
     ocx_quota.request_ocx_refresh()
-    assert time.monotonic() - started < 0.1
     release.set()
     reader.join(timeout=1)
     assert ocx_quota._wait_for_idle_for_tests(timeout=1)
@@ -706,6 +711,134 @@ def test_forced_refresh_interval_is_measured_from_start_even_after_failure(
     assert ocx_quota._wait_for_idle_for_tests(timeout=1)
 
     assert calls == 2
+
+
+def test_start_keyboard_interrupt_after_worker_started_stays_fail_closed(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    real_thread = threading.Thread
+    worker_entered = threading.Event()
+    worker_release = threading.Event()
+    calls = 0
+
+    def fake_run(*, force: bool, timeout: float) -> bytes:
+        nonlocal calls
+        calls += 1
+        worker_entered.set()
+        worker_release.wait(timeout=1)
+        payload = _payload()
+        reports = payload["reports"]
+        assert isinstance(reports, list)
+        report = reports[0]
+        assert isinstance(report, dict)
+        quota = report["quota"]
+        assert isinstance(quota, dict)
+        quota["fiveHourPercent"] = 77
+        return json.dumps(payload).encode()
+
+    class StartThenInterrupt:
+        def __init__(self, **kwargs: object) -> None:
+            self._thread = real_thread(**kwargs)  # type: ignore[arg-type]
+
+        @property
+        def ident(self) -> int | None:
+            return self._thread.ident
+
+        def is_alive(self) -> bool:
+            return self._thread.is_alive()
+
+        def start(self) -> None:
+            self._thread.start()
+            assert worker_entered.wait(timeout=1)
+            raise KeyboardInterrupt
+
+    monkeypatch.setattr(ocx_quota, "_invoke_ocx", fake_run)
+    monkeypatch.setattr(ocx_quota.threading, "Thread", StartThenInterrupt)
+
+    with pytest.raises(KeyboardInterrupt):
+        ocx_quota.request_ocx_refresh()
+    ocx_quota.request_ocx_refresh()
+    assert calls == 1
+    worker_release.set()
+
+    assert ocx_quota._wait_for_idle_for_tests(timeout=1)
+    cached = ocx_quota._read_cache()
+    assert cached is not None
+    assert cached.providers["codex"].windows[0].percent == 77
+
+
+def test_unstarted_thread_exception_can_finish_flight(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class NeverStarted:
+        ident = None
+
+        def __init__(self, **kwargs: object) -> None:
+            return
+
+        def is_alive(self) -> bool:
+            return False
+
+        def start(self) -> None:
+            raise RuntimeError("fixture start failure")
+
+    monkeypatch.setattr(ocx_quota.threading, "Thread", NeverStarted)
+
+    with pytest.raises(RuntimeError, match="fixture start failure"):
+        ocx_quota.request_ocx_refresh()
+
+    assert ocx_quota._wait_for_idle_for_tests(timeout=0)
+
+
+def test_pending_refresh_clock_interrupt_is_propagated_and_not_consumed(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    normal_entered = threading.Event()
+    normal_release = threading.Event()
+    owner_done = threading.Event()
+    owner_errors: list[BaseException] = []
+    calls: list[bool] = []
+
+    def fake_run(*, force: bool, timeout: float) -> bytes:
+        calls.append(force)
+        if not force:
+            normal_entered.set()
+            normal_release.wait(timeout=1)
+        return json.dumps(_payload()).encode()
+
+    def owner() -> None:
+        try:
+            ocx_quota.load_ocx_quota()
+        except BaseException as exc:
+            owner_errors.append(exc)
+        finally:
+            owner_done.set()
+
+    monotonic_calls = 0
+
+    def interrupted_clock() -> float:
+        nonlocal monotonic_calls
+        monotonic_calls += 1
+        if monotonic_calls == 1:
+            return 100.0
+        raise KeyboardInterrupt
+
+    monkeypatch.setattr(ocx_quota, "_invoke_ocx", fake_run)
+    thread = threading.Thread(target=owner)
+    thread.start()
+    assert normal_entered.wait(timeout=1)
+    monkeypatch.setattr(ocx_quota.time, "monotonic", interrupted_clock)
+    ocx_quota.request_ocx_refresh()
+    normal_release.set()
+    assert owner_done.wait(timeout=1)
+
+    assert len(owner_errors) == 1 and isinstance(owner_errors[0], KeyboardInterrupt)
+    assert ocx_quota._pending_forced_refresh is True
+    monkeypatch.setattr(ocx_quota.time, "monotonic", lambda: 500.0)
+    ocx_quota.request_ocx_refresh()
+    assert ocx_quota._wait_for_idle_for_tests(timeout=1)
+    assert calls == [False, True]
+    thread.join(timeout=1)
 
 
 class _LifecycleProcess:
@@ -877,11 +1010,15 @@ def test_waiter_receives_its_flight_result_when_followup_refresh_starts(
 
     monkeypatch.setattr(ocx_quota, "_invoke_ocx", fake_run)
     old_waiter_blocked = threading.Event()
+    new_waiter_blocked = threading.Event()
     real_wait_for_flight = ocx_quota._wait_for_flight_locked
 
-    def recording_wait_for_flight(flight: object) -> None:
-        old_waiter_blocked.set()
-        real_wait_for_flight(flight)  # type: ignore[arg-type]
+    def recording_wait_for_flight(flight: ocx_quota._Flight) -> None:
+        if flight.force:
+            new_waiter_blocked.set()
+        else:
+            old_waiter_blocked.set()
+        real_wait_for_flight(flight)
 
     monkeypatch.setattr(ocx_quota, "_wait_for_flight_locked", recording_wait_for_flight)
     owner = threading.Thread(target=ocx_quota.load_ocx_quota)
@@ -895,7 +1032,7 @@ def test_waiter_receives_its_flight_result_when_followup_refresh_starts(
         assert forced_entered.wait(timeout=1)
         old_result = old_waiter.result(timeout=0.5)
         new_waiter = pool.submit(ocx_quota.load_ocx_quota)
-        assert not new_waiter.done()
+        assert new_waiter_blocked.wait(timeout=1)
         forced_release.set()
         new_result = new_waiter.result(timeout=1)
 

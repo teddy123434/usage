@@ -170,6 +170,7 @@ def request_ocx_refresh() -> None:
             return
         flight = _new_flight_locked(force=True)
         _last_forced_started = now
+        _pending_forced_refresh = False
 
     _start_forced_thread(flight, propagate=True)
 
@@ -197,11 +198,27 @@ def _start_forced_thread(flight: _Flight, *, propagate: bool) -> None:
             name="usage-ocx-refresh",
             daemon=True,
         )
-        thread.start()
     except BaseException:
         _finish_flight(flight, result=_fallback_snapshot(), reaped=True)
+        raise
+    try:
+        thread.start()
+    except Exception:
+        if _thread_definitely_not_started(thread):
+            _finish_flight(flight, result=_fallback_snapshot(), reaped=True)
         if propagate:
             raise
+    except BaseException:
+        # Thread.start() can be interrupted after the worker has actually begun.
+        # Its state is unknowable here, so only the worker may complete the flight.
+        raise
+
+
+def _thread_definitely_not_started(thread: threading.Thread) -> bool:
+    try:
+        return thread.ident is None and not thread.is_alive()
+    except Exception:
+        return False
 
 
 def _forced_refresh_worker(flight: _Flight) -> None:
@@ -224,6 +241,7 @@ def _finish_flight(
     reaped: bool,
 ) -> None:
     followup: _Flight | None = None
+    clock_error: BaseException | None = None
     with _RUN_CONDITION:
         global _active_flight, _pending_forced_refresh, _last_forced_started
         flight.result = result
@@ -232,17 +250,19 @@ def _finish_flight(
         if _active_flight is flight and reaped:
             _active_flight = None
             if not flight.force and _pending_forced_refresh:
-                _pending_forced_refresh = False
                 try:
                     forced_started = time.monotonic()
-                except BaseException:
-                    forced_started = None
-                if forced_started is not None:
+                except BaseException as exc:
+                    clock_error = exc
+                else:
                     followup = _new_flight_locked(force=True)
                     _last_forced_started = forced_started
+                    _pending_forced_refresh = False
         _RUN_CONDITION.notify_all()
     if followup is not None:
         _start_forced_thread(followup, propagate=False)
+    if clock_error is not None:
+        raise clock_error
 
 
 def _flight_result(flight: _Flight) -> OcxQuotaSnapshot:
