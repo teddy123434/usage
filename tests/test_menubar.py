@@ -2249,6 +2249,48 @@ def test_set_button_title_skips_unchanged_visible_state(
     assert len(button.attributed_titles) == 2
 
 
+def test_set_button_title_rebuilds_icons_when_equal_values_are_reordered(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class FakeButton:
+        def __init__(self) -> None:
+            self.titles: list[str] = []
+            self.attributed_titles: list[object] = []
+
+        def setTitle_(self, title: str) -> None:
+            self.titles.append(title)
+
+        def setAttributedTitle_(self, value: object) -> None:
+            self.attributed_titles.append(value)
+
+    button = FakeButton()
+    delegate = menubar.AppDelegate.alloc().initWithMock_interval_(True, 60)
+    delegate.status_item = SimpleNamespace(button=lambda: button)
+    delegate.codex_5h_pct = 0.0
+    state = menubar._empty_state("en")
+    state.claude_session.percent = 0.0
+    state.hide_agy = True
+    state.hide_grok = True
+    rendered_orders: list[tuple[str, ...]] = []
+
+    def render(app: object, current: menubar.PopoverState) -> object:
+        rendered_orders.append(
+            tuple(provider for provider, _text in menubar_title._title_segments(app, current))
+        )
+        return object()
+
+    monkeypatch.setattr(menubar_title, "_menubar_attributed_title", render)
+
+    state.card_order = ("claude", "codex", "agy", "grok", "openrouter")
+    menubar_title._set_button_title(delegate, state)
+    state.card_order = ("codex", "claude", "agy", "grok", "openrouter")
+    menubar_title._set_button_title(delegate, state)
+
+    assert button.titles == ["0% · 0%"]
+    assert len(button.attributed_titles) == 2
+    assert rendered_orders == [("claude", "codex"), ("codex", "claude")]
+
+
 def test_apply_codex_refresh_result_updates_quota_before_full_refresh(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

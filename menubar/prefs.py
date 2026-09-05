@@ -93,14 +93,16 @@ def _save_quota_card_order(order: object) -> bool:
 
 
 def _valid_quota_card_order(value: object) -> tuple[str, ...] | None:
-    if not isinstance(value, list) or any(not isinstance(card, str) for card in value):
+    if not isinstance(value, list) or any(
+        not isinstance(card, str) or not card for card in value
+    ):
         return None
     order = tuple(value)
-    if len(order) != len(set(order)) or not set(order) <= set(DEFAULT_QUOTA_CARD_ORDER):
+    if len(order) != len(set(order)):
         return None
-    # A saved order shorter than the current default means a source was added
-    # since it was written (e.g. a 4th quota card) — append the newcomers
-    # instead of discarding the user's whole preference.
+    # Preserve unknown card IDs for forward compatibility. Older Usage builds
+    # must not erase ordering written by a newer build; append only known cards
+    # this build needs and does not already have.
     missing = (card for card in DEFAULT_QUOTA_CARD_ORDER if card not in order)
     return order + tuple(missing)
 

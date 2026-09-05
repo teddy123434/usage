@@ -323,7 +323,7 @@ class AppDelegate(NSObject):
         self._discussion_window_controller = None
         self._usage_client = ClaudeUsageClient(mock=mock)
         self._menubar_text_cache: dict[str, Any] = {}
-        self._last_button_title_key: tuple[str] | None = None
+        self._last_button_title_key: tuple[tuple[str, str], ...] | None = None
         self._last_plain_title_key: tuple[str] | None = None
         return self
 

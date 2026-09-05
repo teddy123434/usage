@@ -52,7 +52,8 @@ def test_quota_card_order_validates_preferences() -> None:
         None,
         "agy",
         ["agy", "claude", "claude"],
-        ["agy", "claude", "unknown"],
+        ["agy", "claude", ""],
+        ["agy", "claude", 7],
     )
     for value in invalid_values:
         assert menubar_prefs._quota_card_order({"quota_card_order": value}) == (
@@ -74,6 +75,42 @@ def test_quota_card_order_pads_missing_cards_after_upgrade() -> None:
         "grok",
         "openrouter",
     )
+
+
+def test_quota_card_order_preserves_future_ids_and_is_idempotent() -> None:
+    saved = ["future-a", "agy", "future-b", "claude"]
+    migrated = menubar_prefs._quota_card_order({"quota_card_order": saved})
+
+    assert migrated == (
+        "future-a",
+        "agy",
+        "future-b",
+        "claude",
+        "codex",
+        "grok",
+        "openrouter",
+    )
+    assert menubar_prefs._quota_card_order({"quota_card_order": list(migrated)}) == migrated
+
+
+@pytest.mark.parametrize(
+    ("saved", "expected"),
+    [
+        (
+            ["claude", "codex", "agy", "grok"],
+            ("claude", "codex", "agy", "grok", "openrouter"),
+        ),
+        (
+            ["codex", "claude", "agy"],
+            ("codex", "claude", "agy", "grok", "openrouter"),
+        ),
+    ],
+)
+def test_quota_card_order_migrates_old_known_card_sets_once(
+    saved: list[str], expected: tuple[str, ...]
+) -> None:
+    assert menubar_prefs._quota_card_order({"quota_card_order": saved}) == expected
+    assert menubar_prefs._quota_card_order({"quota_card_order": list(expected)}) == expected
 
 
 def test_save_quota_card_order_ignores_invalid_values(

@@ -32,7 +32,7 @@ from menubar.state import PopoverState, _format_percent
 class _TitleApp(Protocol):
     _menubar_text_cache: dict[str, Any]
     codex_5h_pct: float | None
-    _last_button_title_key: tuple[str] | None
+    _last_button_title_key: tuple[tuple[str, str], ...] | None
     _last_plain_title_key: tuple[str] | None
     status_item: Any
 
@@ -86,7 +86,7 @@ def _menubar_attributed_title(app: _TitleApp, state: PopoverState) -> Any:
 
 def _set_button_title(app: _TitleApp, state: PopoverState) -> None:
     title = _compose_title(app, state)
-    title_key = (title,)
+    title_key = tuple(_title_segments(app, state))
     if app._last_button_title_key == title_key:
         return
 
