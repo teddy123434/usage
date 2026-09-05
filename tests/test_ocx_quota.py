@@ -143,6 +143,26 @@ def test_reauth_status_changes_only_that_provider_and_drops_status_text() -> Non
     assert "redacted fixture text" not in repr(result)
 
 
+def test_reauth_status_keeps_valid_report_timestamp_windows_and_details() -> None:
+    payload = _payload()
+    statuses = payload["statuses"]
+    assert isinstance(statuses, list)
+    openai_status = statuses[0]
+    assert isinstance(openai_status, dict)
+    openai_status["status"] = "reauth_required"
+    openai_status["observedAt"] = 1_788_540_010_000
+
+    codex = parse_ocx_quota_payload(payload, _NOW).providers["codex"]
+
+    assert codex.freshness == "reauth_required"
+    assert codex.updated_at == datetime(2026, 9, 4, 16, 40, tzinfo=UTC)
+    assert [(window.label, window.percent) for window in codex.windows[:2]] == [
+        ("five_hour", 6.0),
+        ("weekly", 12.0),
+    ]
+    assert codex.details["aggregation"]["presentation"] == "aggregate"  # type: ignore[index]
+
+
 def test_status_only_reauth_creates_immutable_non_displayable_provider_snapshot() -> None:
     payload = {
         "generatedAt": 1_788_540_000_001,

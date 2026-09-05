@@ -401,7 +401,7 @@ def _with_reauth(
         windows=snapshot.windows,
         account_credits_usd=snapshot.account_credits_usd,
         key_budget_usd=snapshot.key_budget_usd,
-        updated_at=observed_at,
+        updated_at=snapshot.updated_at if snapshot.freshness == "fresh" else observed_at,
         freshness="reauth_required",
         provenance=snapshot.provenance,
         details=snapshot.details,
