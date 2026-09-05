@@ -970,21 +970,16 @@ def test_delayed_cross_monitor_drag_reconciles_scroll_mode_without_new_event(
 def test_concurrent_viewport_application_keeps_generation_in_js_order(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    a_applied = threading.Event()
-    b_numbered = threading.Event()
-    redundant_reconcile = threading.Event()
+    node = shutil.which("node")
+    if node is None:
+        pytest.skip("node is required for the executable viewport generation test")
+    a_ticketed = threading.Event()
+    b_applied = threading.Event()
     callbacks: list[Callable[[], None]] = []
-    javascript: list[bool] = []
-    latest_js_generation = 0
-
-    class SelectiveGenerationGate:
-        def __enter__(self) -> None:
-            if threading.current_thread().name == "placement-a":
-                assert b_numbered.wait(2)
-
-        def __exit__(self, *_args: object) -> None:
-            if threading.current_thread().name == "placement-b":
-                b_numbered.set()
+    javascript: list[str] = []
+    document_generation = 0
+    applied_modes: list[bool] = []
+    document_lock = threading.Lock()
 
     short = wintray._PanelPlacement(
         (1000, 0, 2000, 800),
@@ -998,35 +993,59 @@ def test_concurrent_viewport_application_keeps_generation_in_js_order(
     )
     controller = wintray._WindowsTrayController(mock=True, interval=60)
     controller.window = SimpleNamespace(
+        evaluate_js=lambda code: evaluate_js(code),
         resize=lambda _width, _height: None,
         move=lambda _x, _y: None,
     )
-    controller._window_mutation_lock = SelectiveGenerationGate()  # type: ignore[assignment]
 
     def resolve(*, force_default: bool = False) -> object:
-        name = threading.current_thread().name
-        return short if name == "placement-a" else tall
-
-    def apply(scrollable: bool, generation: int | None = None) -> bool | None:
-        nonlocal latest_js_generation
-        javascript.append(scrollable)
         if threading.current_thread().name == "placement-a":
-            a_applied.set()
-        elif len(javascript) > 2:
-            redundant_reconcile.set()
-        if generation is not None:
-            if generation < latest_js_generation:
-                return None
-            latest_js_generation = generation
-        return True
+            a_ticketed.set()
+            assert b_applied.wait(5)
+            return short
+        return tall
+
+    def run_in_document(code: str, generation: int) -> dict[str, object]:
+        harness = f"""
+const modes = [];
+global.window = {{
+  usagePanelViewportGeneration: {generation},
+  usageApplyPanelViewport(scrollable) {{ modes.push(scrollable); return true; }}
+}};
+const result = eval({json.dumps(code)});
+console.log(JSON.stringify({{
+  result,
+  generation: window.usagePanelViewportGeneration,
+  modes
+}}));
+"""
+        result = subprocess.run(
+            [node, "-e", harness],
+            check=False,
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+        assert result.returncode == 0, result.stderr
+        return cast(dict[str, object], json.loads(result.stdout))
+
+    def evaluate_js(code: str) -> object:
+        nonlocal document_generation
+        with document_lock:
+            javascript.append(code)
+            result = run_in_document(code, document_generation)
+            document_generation = cast(int, result["generation"])
+            applied_modes.extend(cast(list[bool], result["modes"]))
+        if threading.current_thread().name == "placement-b":
+            b_applied.set()
+        return result["result"]
 
     monkeypatch.setattr(controller, "_resolve_panel_placement", resolve)
-    monkeypatch.setattr(controller, "_apply_panel_viewport", apply)
     monkeypatch.setattr(controller, "_dispatch_window_mutation", callbacks.append)
 
     first = threading.Thread(target=controller._place_window, name="placement-a")
     first.start()
-    assert a_applied.wait(2)
+    assert a_ticketed.wait(2)
     second = threading.Thread(target=controller._place_window, name="placement-b")
     second.start()
     first.join(2)
@@ -1034,11 +1053,43 @@ def test_concurrent_viewport_application_keeps_generation_in_js_order(
     assert not first.is_alive()
     assert not second.is_alive()
 
-    for callback in callbacks:
-        callback()
+    assert len(callbacks) == 1
+    assert len(javascript) == 2
+    assert "const generation = 2" in javascript[0]
+    assert "usageApplyPanelViewport(false)" in javascript[0]
+    assert "const generation = 1" in javascript[1]
+    assert "usageApplyPanelViewport(true)" in javascript[1]
+    assert document_generation == 2
+    assert applied_modes == [False]
 
-    assert not redundant_reconcile.wait(0.5)
-    assert javascript == [True, False]
+    guard = 'if (current > generation) return "stale"; '
+    assert guard in javascript[1]
+    broken = run_in_document(javascript[1].replace(guard, ""), document_generation)
+    assert broken["generation"] == 1
+    assert broken["modes"] == [True]
+
+
+def test_unavailable_non_scroll_viewport_does_not_publish_generation(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    callbacks: list[Callable[[], None]] = []
+    controller = wintray._WindowsTrayController(mock=True, interval=60)
+    controller.window = SimpleNamespace(evaluate_js=lambda _code: False)
+    monkeypatch.setattr(
+        controller,
+        "_resolve_panel_placement",
+        lambda *, force_default=False: wintray._PanelPlacement(
+            (0, 0, 1000, 1200),
+            (100, 100),
+            wintray.PanelViewport(380, 1000, 1000, False),
+        ),
+    )
+    monkeypatch.setattr(controller, "_dispatch_window_mutation", callbacks.append)
+
+    controller._place_window()
+
+    assert controller._panel_placement_generation == 0
+    assert callbacks == []
 
 
 def test_load_preferences_non_utf8(
@@ -1090,7 +1141,7 @@ def test_switch_panel_keeps_dragged_position_before_new_height_is_measured(
         show=lambda: None,
         hide=lambda: None,
         load_html=lambda html: None,
-        evaluate_js=lambda code: None,
+        evaluate_js=lambda code: True,
     )
     controller = wintray._WindowsTrayController(mock=True, interval=60)
     monkeypatch.setattr(prefs, "PREFERENCES_FILE", tmp_path / "usage-preferences.json")
@@ -1140,7 +1191,7 @@ def test_switch_panel_keeps_dragged_position_on_secondary_monitor(
         show=lambda: None,
         hide=lambda: None,
         load_html=lambda html: None,
-        evaluate_js=lambda code: None,
+        evaluate_js=lambda code: True,
     )
     controller = wintray._WindowsTrayController(mock=True, interval=60)
     monkeypatch.setattr(prefs, "PREFERENCES_FILE", tmp_path / "usage-preferences.json")

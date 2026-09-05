@@ -142,6 +142,12 @@ class _RenderedPanelViewport:
     generation: int
 
 
+class _PanelViewportApplyResult(IntEnum):
+    UNAVAILABLE = 0
+    APPLIED = 1
+    STALE = 2
+
+
 TRAY_UNKNOWN_COLOR = (110, 118, 129, 255)
 TRAY_NORMAL_COLOR = (244, 145, 100, 255)
 TRAY_PAUSED_COLOR = (255, 196, 57, 255)
@@ -844,7 +850,9 @@ class _WindowsTrayController:
         if self.visible:
             self._place_window()
 
-    def _apply_panel_viewport(self, scrollable: bool, generation: int) -> bool | None:
+    def _apply_panel_viewport(
+        self, scrollable: bool, generation: int
+    ) -> _PanelViewportApplyResult:
         if self.window is not None and hasattr(self.window, "evaluate_js"):
             try:
                 result = self.window.evaluate_js(
@@ -863,14 +871,19 @@ class _WindowsTrayController:
                     "})()"
                 )
                 if result == "stale":
-                    return None
-                return result == "applied" or result is True
+                    return _PanelViewportApplyResult.STALE
+                if result == "applied" or result is True:
+                    return _PanelViewportApplyResult.APPLIED
             except Exception:
                 logger.exception("Unable to apply panel viewport")
-            return False
+            return _PanelViewportApplyResult.UNAVAILABLE
         # Lightweight window doubles do not embed a browser. There is no DOM
         # to scale, so geometry-only tests can proceed normally.
-        return self.window is not None
+        return (
+            _PanelViewportApplyResult.APPLIED
+            if self.window is not None
+            else _PanelViewportApplyResult.UNAVAILABLE
+        )
 
     def attach(self, icon: Any, window: Any) -> None:
         self.icon = icon
@@ -1037,9 +1050,7 @@ class _WindowsTrayController:
             placement.viewport.scrollable,
             generation,
         )
-        if viewport_applied is None:
-            return
-        if placement.viewport.scrollable and not viewport_applied:
+        if viewport_applied is not _PanelViewportApplyResult.APPLIED:
             return
         with self._panel_placement_lock:
             self._panel_placement_generation = max(
