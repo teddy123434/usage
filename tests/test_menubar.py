@@ -9,7 +9,7 @@ from __future__ import annotations
 import json
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
-from types import SimpleNamespace
+from types import MappingProxyType, SimpleNamespace
 from typing import Any, cast
 
 import pytest
@@ -19,6 +19,7 @@ import quota.agy_window_keeper as agy_window_keeper
 import quota.window_keeper as window_keeper
 from installer import statusline_settings
 from loaders import codex_loader, grok_loader, history_loader
+from loaders.ocx_quota import OcxQuotaSnapshot
 from menubar import actions as menubar_actions
 from menubar import agy as menubar_agy
 from menubar import app as menubar
@@ -44,6 +45,13 @@ def _use_estimated_panel_height(monkeypatch: pytest.MonkeyPatch) -> None:
         "load_panel_content_height",
         lambda panel_id, defaults=None: None,
     )
+    now = datetime.now(UTC)
+    monkeypatch.setattr(
+        menubar_refresh,
+        "load_ocx_quota",
+        lambda: OcxQuotaSnapshot(MappingProxyType({}), now, now),
+    )
+    monkeypatch.setattr(menubar_refresh, "request_ocx_refresh", lambda: None)
 
 
 class _FakeMenu:
@@ -709,6 +717,9 @@ def test_auto_update_disabled_skips_background_check(monkeypatch: pytest.MonkeyP
         return None
 
     monkeypatch.setattr(menubar, "_load_preferences", lambda: {"auto_update_check": False})
+    monkeypatch.setattr(
+        menubar_update, "_load_preferences", lambda: {"auto_update_check": False}
+    )
     monkeypatch.setattr(
         "menubar.app.update_checker.check_latest_release", fake_check_latest_release
     )
@@ -3043,3 +3054,184 @@ def test_state_from_outcome_shows_setup_button_for_codex_only(
     )
 
     assert state.show_install_button is True
+
+
+def test_load_sources_reads_one_ocx_snapshot_for_the_refresh(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from loaders.ocx_quota import parse_ocx_quota_payload
+
+    fixture = Path(__file__).parent / "fixtures" / "ocx_provider_quota.json"
+    ocx = parse_ocx_quota_payload(
+        json.loads(fixture.read_text(encoding="utf-8")), datetime(2026, 9, 5, tzinfo=UTC)
+    )
+    calls = 0
+
+    def load_ocx():
+        nonlocal calls
+        calls += 1
+        return ocx
+
+    monkeypatch.setattr(menubar_refresh, "load_ocx_quota", load_ocx)
+    monkeypatch.setattr(
+        menubar_agy,
+        "load_refresh_result",
+        lambda *_: menubar_agy.AgyRefreshResult(None, True),
+    )
+    monkeypatch.setattr(
+        menubar_grok,
+        "load_refresh_result",
+        lambda *_: menubar_grok.GrokRefreshResult(None, True),
+    )
+
+    class Delegate:
+        language = "en"
+        burn_rate_trackers: dict[str, BurnRateTracker] = {}
+
+        def _load_codex_refresh_result(self) -> dict[str, object]:
+            missing = menubar_state._missing_row
+            return {
+                "codex_rows": (
+                    missing("Session", menubar_state.CODEX_COLOR),
+                    missing("Weekly", menubar_state.CODEX_COLOR),
+                ),
+                "codex_5h_pct": None,
+            }
+
+    sources = menubar_refresh.load_sources(cast(Any, Delegate()))
+
+    assert calls == 1
+    assert sources.ocx_snapshot is ocx
+
+
+def test_load_sources_isolates_a_whole_ocx_failure_from_native_results(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    native = {"codex_rows": (), "codex_5h_pct": 17.0}
+
+    def fail_ocx() -> OcxQuotaSnapshot:
+        raise RuntimeError("ocx unavailable")
+
+    monkeypatch.setattr(menubar_refresh, "load_ocx_quota", fail_ocx)
+    monkeypatch.setattr(
+        menubar_agy,
+        "load_refresh_result",
+        lambda *_: menubar_agy.AgyRefreshResult(None, True),
+    )
+    monkeypatch.setattr(
+        menubar_grok,
+        "load_refresh_result",
+        lambda *_: menubar_grok.GrokRefreshResult(None, True),
+    )
+
+    class Delegate:
+        language = "en"
+        burn_rate_trackers: dict[str, BurnRateTracker] = {}
+
+        def _load_codex_refresh_result(self) -> dict[str, object]:
+            return native
+
+    sources = menubar_refresh.load_sources(cast(Any, Delegate()))
+
+    assert sources.codex_result is native
+    assert sources.ocx_snapshot is not None
+    assert not sources.ocx_snapshot.providers
+
+
+def test_ocx_provider_failures_are_isolated_and_can_reveal_absent_native_cards(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from loaders.ocx_quota import parse_ocx_quota_payload
+
+    fixture = Path(__file__).parent / "fixtures" / "ocx_provider_quota.json"
+    payload = json.loads(fixture.read_text(encoding="utf-8"))
+    payload["reports"][1]["quota"]["fiveHourPercent"] = "broken"
+    ocx = parse_ocx_quota_payload(payload, datetime(2026, 9, 5, tzinfo=UTC))
+    monkeypatch.setattr(menubar_refresh, "_quota_source_mode", lambda *_: "ocx")
+    monkeypatch.setattr(menubar_refresh, "_quota_last_source", lambda *_: None)
+    monkeypatch.setattr(menubar_refresh, "_save_quota_last_source", lambda *_: True)
+    monkeypatch.setattr(menubar_refresh, "_hide_agy_enabled", lambda: False)
+    monkeypatch.setattr(menubar_refresh, "_hide_grok_enabled", lambda: False)
+    state = menubar_state._empty_state("en")
+    state.claude_session = menubar_state.QuotaRowState(
+        "Session", 88.0, "88% used", "Resets in 1h", menubar_state.CLAUDE_COLOR
+    )
+    state.projects = [("native-history", 42, 0.25)]
+
+    class Delegate:
+        language = "en"
+        latest_state = menubar_state._empty_state("en")
+
+    sources = menubar_refresh.RefreshSources(
+        codex_result={},
+        history_scan=None,
+        agy_result=menubar_agy.AgyRefreshResult(None, True),
+        agy_projection=menubar_agy.fallback_projection("en"),
+        grok_result=menubar_grok.GrokRefreshResult(None, True),
+        grok_projection=menubar_grok.fallback_projection("en"),
+        debug_timing=False,
+        ocx_snapshot=ocx,
+    )
+
+    menubar_refresh._project_selected_quota_sources(
+        cast(Any, Delegate()), sources, state, PollOutcome(PollState.TOKEN_ERROR)
+    )
+
+    assert state.claude_session.available is False
+    assert state.provider_sources["claude"].freshness == "reauth_required"
+    assert state.codex_session.percent == 6.0
+    assert state.agy_session.percent == 0.0
+    assert state.grok_weekly.percent == 0.0
+    assert state.hide_agy is False
+    assert state.hide_grok is False
+    assert state.projects == [("native-history", 42, 0.25)]
+    assert state.provider_sources is not None
+    assert state.provider_sources["codex"].source == "ocx"
+
+
+def test_missing_forced_ocx_keeps_prior_rows_and_marks_source_stale(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    now = datetime.now(UTC)
+    previous = menubar_state._empty_state("en")
+    previous.codex_session = menubar_state.QuotaRowState(
+        "Session", 9.0, "9% used", "Resets in 1h", menubar_state.CODEX_COLOR
+    )
+    previous.provider_sources["codex"] = menubar_state.ProviderSourceState(
+        "ocx", "OCX", "fresh", None
+    )
+    state = menubar_state._empty_state("en")
+    monkeypatch.setattr(
+        menubar_refresh,
+        "_quota_source_mode",
+        lambda provider: "ocx" if provider == "codex" else "native",
+    )
+    monkeypatch.setattr(
+        menubar_refresh,
+        "_quota_last_source",
+        lambda provider: "ocx" if provider == "codex" else None,
+    )
+
+    class Delegate:
+        language = "en"
+        latest_state = previous
+
+    empty_ocx = OcxQuotaSnapshot(MappingProxyType({}), now, now)
+    sources = menubar_refresh.RefreshSources(
+        codex_result={},
+        history_scan=None,
+        agy_result=menubar_agy.AgyRefreshResult(None, True),
+        agy_projection=menubar_agy.fallback_projection("en"),
+        grok_result=menubar_grok.GrokRefreshResult(None, True),
+        grok_projection=menubar_grok.fallback_projection("en"),
+        debug_timing=False,
+        ocx_snapshot=empty_ocx,
+    )
+
+    menubar_refresh._project_selected_quota_sources(
+        cast(Any, Delegate()), sources, state, PollOutcome(PollState.TOKEN_ERROR)
+    )
+
+    assert state.codex_session.percent == 9.0
+    assert state.provider_sources["codex"].source == "ocx"
+    assert state.provider_sources["codex"].freshness == "stale"

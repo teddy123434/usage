@@ -10,7 +10,8 @@ import logging
 import os
 import threading
 import time
-from dataclasses import dataclass
+from collections.abc import Mapping
+from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 from datetime import time as datetime_time
 from pathlib import Path
@@ -21,6 +22,13 @@ from installer.statusline_settings import _statusline_enabled
 from loaders import codex_loader, grok_loader
 from loaders.codex_paths import codex_home
 from loaders.history_loader import CLAUDE_PROJECTS_DIR, UsageEntry, load_entries
+from loaders.ocx_quota import (
+    Freshness,
+    LogicalProvider,
+    NormalizedQuotaSnapshot,
+    NormalizedQuotaWindow,
+    QuotaSource,
+)
 from menubar.prefs import _hide_claude_enabled, _hide_codex_enabled, _quota_card_order
 from pricing import calculate_cost
 from quota.burn_rate import WARNING_PERCENT_FLOOR, BurnRateTracker
@@ -93,6 +101,41 @@ class QuotaRowState:
     available: bool = True
 
 
+@dataclass(frozen=True, slots=True)
+class ProviderSourceState:
+    source: QuotaSource
+    label: str
+    freshness: Freshness
+    age_text: str | None
+
+
+@dataclass(frozen=True, slots=True)
+class OpenRouterState:
+    headline: str
+    account_remaining: str | None
+    account_total: str | None
+    account_used: str | None
+    key_limit: str | None
+    key_remaining: str | None
+    key_percent: float | None
+    reset_text: str | None
+    key_unlimited: bool
+
+
+@dataclass(frozen=True, slots=True)
+class CodexCurrentAccountState:
+    is_main: bool | None
+    plan: str | None
+    rows: tuple[QuotaRowState, ...]
+
+
+@dataclass(frozen=True, slots=True)
+class OcxQuotaProjection:
+    rows: tuple[QuotaRowState, ...]
+    source: ProviderSourceState
+    current_account: CodexCurrentAccountState | None = None
+
+
 class CodexStaleState(TypedDict):
     ageText: str
 
@@ -148,6 +191,9 @@ class PopoverState:
     grok_stale: GrokStaleState | None = None
     card_order: tuple[str, ...] = ("claude", "codex", "agy", "grok")
     history_error: HistoryLoadErrorState | None = None
+    provider_sources: dict[str, ProviderSourceState] = field(default_factory=dict)
+    openrouter: OpenRouterState | None = None
+    codex_current_account: CodexCurrentAccountState | None = None
     # Talent-market panel payload (None for non-talent panels). Fetched from the
     # external instate-cli by talent_market_bridge, only when the active panel
     # is "talent_market", so classic/matrix users never spawn that subprocess.
@@ -600,6 +646,216 @@ def format_human_time(seconds: float, language: str = "en") -> str:
     if hours > 0:
         return _t(language, "duration_hours", hours=hours, minutes=minutes)
     return _t(language, "duration_minutes", minutes=minutes)
+
+
+def provider_source_state(
+    snapshot: NormalizedQuotaSnapshot,
+    language: str,
+    *,
+    now: float | None = None,
+) -> ProviderSourceState:
+    """Project source provenance without retaining the normalized snapshot."""
+    current_time = time.time() if now is None else now
+    age_seconds = max(0.0, current_time - snapshot.updated_at.timestamp())
+    age_text = (
+        format_human_time(age_seconds, language)
+        if snapshot.freshness in {"stale", "reauth_required"}
+        else None
+    )
+    return ProviderSourceState(
+        source=snapshot.source,
+        label=snapshot.source_label,
+        freshness=snapshot.freshness,
+        age_text=age_text,
+    )
+
+
+def native_quota_snapshot(
+    provider: str,
+    rows: tuple[QuotaRowState, ...],
+    *,
+    updated_at: datetime | None = None,
+    stale: bool = False,
+) -> NormalizedQuotaSnapshot | None:
+    """Adapt already-loaded native rows without changing the native loader."""
+    if provider not in {"claude", "codex", "antigravity", "grok"}:
+        return None
+    windows = tuple(
+        NormalizedQuotaWindow(row.title or "quota", row.percent, None)
+        for row in rows
+        if row.available and row.percent is not None
+    )
+    if not windows:
+        return None
+    return NormalizedQuotaSnapshot(
+        provider=cast(LogicalProvider, provider),
+        source="native",
+        source_label="Native",
+        windows=windows,
+        account_credits_usd=None,
+        key_budget_usd=None,
+        updated_at=updated_at or datetime.now(UTC),
+        freshness="stale" if stale else "fresh",
+        provenance=None,
+        details={},
+    )
+
+
+def native_claude_snapshot(
+    outcome: PollOutcome | None,
+    rows: tuple[QuotaRowState, QuotaRowState],
+) -> NormalizedQuotaSnapshot | None:
+    """Adapt the already-polled Claude snapshot for source selection."""
+    if outcome is None or outcome.state != PollState.SUCCESS or outcome.snapshot is None:
+        return None
+    snapshot = outcome.snapshot
+    return native_quota_snapshot(
+        "claude",
+        rows,
+        updated_at=datetime.fromtimestamp(snapshot.polled_at, UTC),
+        stale=snapshot.is_stale or snapshot.data_source != "hook",
+    )
+
+
+def native_codex_snapshot(
+    codex_result: Mapping[str, Any],
+) -> NormalizedQuotaSnapshot | None:
+    """Adapt the existing Codex refresh result without re-reading its loader."""
+    rows = codex_result.get("codex_rows")
+    if not isinstance(rows, tuple) or len(rows) != 2:
+        return None
+    if not all(isinstance(row, QuotaRowState) for row in rows):
+        return None
+    return native_quota_snapshot(
+        "codex",
+        cast(tuple[QuotaRowState, QuotaRowState], rows),
+        stale=codex_result.get("codex_stale") is not None,
+    )
+
+
+def project_ocx_quota(
+    snapshot: NormalizedQuotaSnapshot,
+    language: str,
+    color: tuple[float, float, float],
+    *,
+    now: float | None = None,
+) -> OcxQuotaProjection:
+    """Convert one isolated OCX provider row into panel-ready quota rows."""
+    current_time = time.time() if now is None else now
+    by_label = {window.label: window for window in snapshot.windows}
+    ordered: tuple[QuotaRowState, ...]
+    if snapshot.provider == "grok":
+        weekly = by_label.get("weekly")
+        ordered = (
+            (_project_window(weekly, _t(language, "weekly_label"), current_time, color, language),)
+            if weekly is not None
+            else ()
+        )
+    else:
+        session = by_label.get("five_hour")
+        second = by_label.get("weekly") or by_label.get("monthly")
+        second_key = "weekly_label" if "weekly" in by_label else "monthly_label"
+        ordered = (
+            _project_window_or_missing(
+                session, _t(language, "session_label"), current_time, color, language
+            ),
+            _project_window_or_missing(
+                second, _t(language, second_key), current_time, color, language
+            ),
+        )
+    return OcxQuotaProjection(
+        rows=ordered,
+        source=provider_source_state(snapshot, language, now=current_time),
+        current_account=_codex_current_account(snapshot, language, color, current_time),
+    )
+
+
+def _project_window(
+    window: NormalizedQuotaWindow,
+    title: str,
+    now: float,
+    color: tuple[float, float, float],
+    language: str,
+) -> QuotaRowState:
+    return _normalized_quota_row(
+        title,
+        window.percent,
+        window.reset_at.timestamp() if window.reset_at is not None else None,
+        now,
+        color,
+        language,
+    )
+
+
+def _project_window_or_missing(
+    window: NormalizedQuotaWindow | None,
+    title: str,
+    now: float,
+    color: tuple[float, float, float],
+    language: str,
+) -> QuotaRowState:
+    if window is None:
+        return _missing_row(title, color, language)
+    return _project_window(window, title, now, color, language)
+
+
+def _normalized_quota_row(
+    title: str,
+    percent: float,
+    reset_at: float | None,
+    now: float,
+    color: tuple[float, float, float],
+    language: str,
+) -> QuotaRowState:
+    if reset_at is not None:
+        return _quota_row(title, percent, reset_at, now, color, language)
+    return QuotaRowState(
+        title=title,
+        percent=percent,
+        percent_text=_t(language, "percent_used", value=_format_percent(percent)),
+        reset_text=_t(language, "reset_placeholder"),
+        color=_bar_color(percent, color),
+        available=True,
+    )
+
+
+def _codex_current_account(
+    snapshot: NormalizedQuotaSnapshot,
+    language: str,
+    color: tuple[float, float, float],
+    now: float,
+) -> CodexCurrentAccountState | None:
+    aggregation = snapshot.details.get("aggregation")
+    if not isinstance(aggregation, Mapping):
+        return None
+    account = aggregation.get("currentAccount")
+    if not isinstance(account, Mapping):
+        return None
+    quota = account.get("quota")
+    projected: list[QuotaRowState] = []
+    if isinstance(quota, Mapping):
+        for percent_key, reset_key, title_key in (
+            ("fiveHourPercent", "fiveHourResetAt", "session_label"),
+            ("weeklyPercent", "weeklyResetAt", "weekly_label"),
+            ("monthlyPercent", "monthlyResetAt", "monthly_label"),
+        ):
+            percent = quota.get(percent_key)
+            if not isinstance(percent, int | float):
+                continue
+            reset = quota.get(reset_key)
+            reset_at = reset.timestamp() if isinstance(reset, datetime) else None
+            projected.append(
+                _normalized_quota_row(
+                    _t(language, title_key), float(percent), reset_at, now, color, language
+                )
+            )
+    is_main = account.get("isMain")
+    plan = account.get("plan")
+    return CodexCurrentAccountState(
+        is_main=is_main if isinstance(is_main, bool) else None,
+        plan=plan if isinstance(plan, str) else None,
+        rows=tuple(projected),
+    )
 
 
 def codex_stale_state(updated_at: str, now: float, language: str) -> CodexStaleState | None:

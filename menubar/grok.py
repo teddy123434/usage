@@ -14,6 +14,7 @@ from typing import cast
 
 from i18n import _t
 from loaders.grok_quota_probe import GrokQuotaResult, find_grok, load_quota
+from loaders.ocx_quota import NormalizedQuotaSnapshot
 from menubar.state import (
     GROK_COLOR,
     GrokStaleState,
@@ -21,6 +22,7 @@ from menubar.state import (
     _bar_color,
     _format_percent,
     format_human_time,
+    native_quota_snapshot,
 )
 from usage_common.time_utils import parse_iso8601_utc_or_raise
 
@@ -101,6 +103,13 @@ def fallback_projection(language: str) -> GrokQuotaProjection:
         ),
         stale=None,
     )
+
+
+def native_snapshot(projection: GrokQuotaProjection | None) -> NormalizedQuotaSnapshot | None:
+    """Adapt the existing native projection for source selection."""
+    if projection is None:
+        return None
+    return native_quota_snapshot("grok", (projection.weekly,), stale=projection.stale is not None)
 
 
 def _stale_state(fetched_at: str, now: float, language: str) -> GrokStaleState | None:

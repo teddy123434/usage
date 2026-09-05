@@ -23,6 +23,7 @@ from loaders.agy_quota_probe import (
 from loaders.agy_quota_probe import (
     find_agy as find_agy,
 )
+from loaders.ocx_quota import NormalizedQuotaSnapshot
 from menubar.state import (
     AGY_COLOR,
     AgyStaleState,
@@ -30,6 +31,7 @@ from menubar.state import (
     _bar_color,
     _format_percent,
     format_human_time,
+    native_quota_snapshot,
 )
 from quota.burn_rate import WARNING_PERCENT_FLOOR, BurnRateTracker
 from usage_common.time_utils import parse_iso8601_utc_or_raise
@@ -159,6 +161,17 @@ def fallback_projection(language: str) -> AgyQuotaProjection:
         ),
         stale=None,
         five_hour=None,
+    )
+
+
+def native_snapshot(projection: AgyQuotaProjection | None) -> NormalizedQuotaSnapshot | None:
+    """Adapt the existing native projection for source selection."""
+    if projection is None:
+        return None
+    return native_quota_snapshot(
+        "antigravity",
+        (projection.session, projection.weekly),
+        stale=projection.stale is not None,
     )
 
 

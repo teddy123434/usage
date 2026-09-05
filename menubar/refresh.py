@@ -14,6 +14,8 @@ import os
 import time
 from collections.abc import Coroutine
 from dataclasses import dataclass
+from datetime import UTC, datetime
+from types import MappingProxyType
 from typing import Any, Protocol
 
 import quota.agy_window_keeper as agy_window_keeper
@@ -21,8 +23,14 @@ import quota.codex_window_keeper as codex_window_keeper
 import quota.window_keeper as window_keeper
 import talent_market_bridge
 from loaders.history_loader import UsageEntry
+from loaders.ocx_quota import (
+    OcxQuotaSnapshot,
+    load_ocx_quota,
+    request_ocx_refresh,
+)
 from menubar import agy as menubar_agy
 from menubar import grok as menubar_grok
+from menubar import openrouter as menubar_openrouter
 from menubar import state as menubar_state
 from menubar.prefs import (
     _hide_agy_enabled,
@@ -30,7 +38,11 @@ from menubar.prefs import (
     _hide_codex_enabled,
     _hide_grok_enabled,
     _quota_card_order,
+    _quota_last_source,
+    _quota_source_mode,
+    _save_quota_last_source,
 )
+from menubar.quota_sources import proven_ocx_route, select_quota_source
 from quota.burn_rate import BurnRateTracker
 from quota.usage_rate import UsageRateTracker
 from service_status import CLAUDE_STATUS, CODEX_STATUS, get_service_status
@@ -76,6 +88,7 @@ class RefreshSources:
     grok_result: menubar_grok.GrokRefreshResult
     grok_projection: menubar_grok.GrokQuotaProjection
     debug_timing: bool
+    ocx_snapshot: OcxQuotaSnapshot | None = None
 
     def measure(self, stage: str, started_at: float) -> None:
         if self.debug_timing:
@@ -103,6 +116,17 @@ def load_sources(app: _RefreshApp) -> RefreshSources:
         elapsed_ms = (time.monotonic() - started_at) * 1000
         logger.debug("refresh_timing stage=%s elapsed_ms=%.1f", "grok_load", elapsed_ms)
     grok_projection = grok_result.projection or menubar_grok.fallback_projection(app.language)
+    started_at = time.monotonic() if debug_timing else 0.0
+    try:
+        ocx_snapshot = load_ocx_quota()
+    except Exception:
+        now = datetime.now(UTC)
+        ocx_snapshot = OcxQuotaSnapshot(MappingProxyType({}), now, now)
+        if os.environ.get("USAGE_DEBUG") == "1":
+            logger.warning("OCX quota load failed", exc_info=True)
+    if debug_timing:
+        elapsed_ms = (time.monotonic() - started_at) * 1000
+        logger.debug("refresh_timing stage=%s elapsed_ms=%.1f", "ocx_load", elapsed_ms)
     return RefreshSources(
         codex_result=codex_result,
         history_scan=(
@@ -112,6 +136,7 @@ def load_sources(app: _RefreshApp) -> RefreshSources:
         agy_projection=agy_projection,
         grok_result=grok_result,
         grok_projection=grok_projection,
+        ocx_snapshot=ocx_snapshot,
         debug_timing=debug_timing,
     )
 
@@ -136,6 +161,7 @@ def build_result(app: _RefreshApp, sources: RefreshSources) -> dict[str, Any]:
     hide_agy = agy_result.hide_agy or _hide_agy_enabled()
     hide_grok = grok_result.hide_grok or _hide_grok_enabled()
     card_order = _quota_card_order()
+    outcome: PollOutcome | None = None
     try:
         started_at = time.monotonic() if sources.debug_timing else 0.0
         if sources.history_scan is not None:
@@ -264,6 +290,16 @@ def build_result(app: _RefreshApp, sources: RefreshSources) -> dict[str, Any]:
         state.hide_grok = hide_grok
         state.card_order = card_order
 
+    _project_selected_quota_sources(app, sources, state, outcome)
+    codex_5h_pct = (
+        state.codex_session.percent if state.codex_session.available else state.codex_weekly.percent
+    )
+    try:
+        request_ocx_refresh()
+    except Exception:
+        if os.environ.get("USAGE_DEBUG") == "1":
+            logger.warning("OCX refresh request failed", exc_info=True)
+
     # Talent-market data is panel-local (no quota numbers). Fetch it
     # only when that panel is active so classic/matrix users never pay
     # the subprocess cost. list_state already swallows CLI errors and
@@ -281,3 +317,210 @@ def build_result(app: _RefreshApp, sources: RefreshSources) -> dict[str, Any]:
         "codex_5h_pct": codex_5h_pct,
         "codex_model": codex_model,
     }
+
+
+def _project_selected_quota_sources(
+    app: _RefreshApp,
+    sources: RefreshSources,
+    state: menubar_state.PopoverState,
+    outcome: PollOutcome | None,
+) -> None:
+    """Select and project providers independently from one immutable OCX read."""
+    previous = getattr(app, "latest_state", menubar_state._empty_state(app.language))
+    state.provider_sources = dict(previous.provider_sources)
+    ocx_providers = sources.ocx_snapshot.providers if sources.ocx_snapshot is not None else {}
+    native = {
+        "claude": menubar_state.native_claude_snapshot(
+            outcome, (state.claude_session, state.claude_weekly)
+        ),
+        "codex": menubar_state.native_codex_snapshot(sources.codex_result),
+        "antigravity": menubar_agy.native_snapshot(sources.agy_result.projection),
+        "grok": menubar_grok.native_snapshot(sources.grok_result.projection),
+    }
+    for provider in ("claude", "codex", "antigravity", "grok"):
+        ocx = ocx_providers.get(provider)
+        last = None
+        try:
+            mode = _quota_source_mode(provider)
+            last = _quota_last_source(provider)
+            selected = select_quota_source(
+                mode=mode,
+                native=native[provider],
+                ocx=ocx,
+                proven_ocx_route=_route_is_ocx(app, provider),
+                last_selected=last,
+            )
+            if selected.selected is None:
+                _preserve_or_clear_provider(
+                    state,
+                    previous,
+                    provider,
+                    selected.source,
+                    preserve_previous=ocx is None or selected.source != "ocx",
+                )
+                continue
+            if selected.source == "ocx":
+                projection = menubar_state.project_ocx_quota(
+                    selected.selected, app.language, _provider_color(provider)
+                )
+                _apply_ocx_projection(state, provider, projection)
+            else:
+                state.provider_sources[provider] = menubar_state.provider_source_state(
+                    selected.selected, app.language
+                )
+            if selected.source is not None and selected.source != last:
+                try:
+                    _save_quota_last_source(provider, selected.source)
+                except Exception:
+                    if os.environ.get("USAGE_DEBUG") == "1":
+                        logger.warning(
+                            "quota source preference save failed: %s",
+                            provider,
+                            exc_info=True,
+                        )
+        except Exception:
+            if os.environ.get("USAGE_DEBUG") == "1":
+                logger.warning("quota source projection failed: %s", provider, exc_info=True)
+            _preserve_or_clear_provider(state, previous, provider, last)
+
+    try:
+        state.openrouter = menubar_openrouter.project_quota(
+            ocx_providers.get("openrouter"), app.language
+        )
+        openrouter_snapshot = ocx_providers.get("openrouter")
+        if state.openrouter is not None and openrouter_snapshot is not None:
+            state.provider_sources["openrouter"] = menubar_state.provider_source_state(
+                openrouter_snapshot, app.language
+            )
+        elif openrouter_snapshot is None and previous.openrouter is not None:
+            state.openrouter = previous.openrouter
+            _mark_previous_source_stale(state, previous, "openrouter")
+        else:
+            state.provider_sources.pop("openrouter", None)
+    except Exception:
+        state.openrouter = previous.openrouter
+
+
+def _route_is_ocx(app: _RefreshApp, provider: str) -> bool:
+    facts_by_provider = getattr(app, "quota_route_facts", {})
+    facts = facts_by_provider.get(provider) if isinstance(facts_by_provider, dict) else None
+    return proven_ocx_route(
+        provider,
+        route=facts if isinstance(facts, dict) else None,
+        env=os.environ if provider == "claude" else None,
+    )
+
+
+def _provider_color(provider: str) -> tuple[float, float, float]:
+    return {
+        "claude": menubar_state.CLAUDE_COLOR,
+        "codex": menubar_state.CODEX_COLOR,
+        "antigravity": menubar_state.AGY_COLOR,
+        "grok": menubar_state.GROK_COLOR,
+    }[provider]
+
+
+def _apply_ocx_projection(
+    state: menubar_state.PopoverState,
+    provider: str,
+    projection: menubar_state.OcxQuotaProjection,
+) -> None:
+    state.provider_sources = state.provider_sources or {}
+    state.provider_sources[provider] = projection.source
+    rows = projection.rows
+    if provider == "claude":
+        state.claude_session, state.claude_weekly = _two_rows(
+            rows, state.claude_session, state.claude_weekly
+        )
+        state.show_install_button = False
+        state.status_long = projection.source.freshness != "fresh"
+        state.hide_claude = _hide_claude_enabled()
+    elif provider == "codex":
+        state.codex_session, state.codex_weekly = _two_rows(
+            rows, state.codex_session, state.codex_weekly
+        )
+        state.codex_credits = None
+        state.codex_current_account = projection.current_account
+        state.hide_codex = _hide_codex_enabled()
+    elif provider == "antigravity":
+        state.agy_session, state.agy_weekly = _two_rows(rows, state.agy_session, state.agy_weekly)
+        state.agy_group_name = ""
+        state.hide_agy = _hide_agy_enabled()
+    elif provider == "grok":
+        if rows:
+            state.grok_weekly = rows[-1]
+        state.hide_grok = _hide_grok_enabled()
+
+
+def _two_rows(
+    rows: tuple[menubar_state.QuotaRowState, ...],
+    first: menubar_state.QuotaRowState,
+    second: menubar_state.QuotaRowState,
+) -> tuple[menubar_state.QuotaRowState, menubar_state.QuotaRowState]:
+    return (
+        rows[0] if rows else first,
+        rows[1] if len(rows) > 1 else second,
+    )
+
+
+def _preserve_or_clear_provider(
+    state: menubar_state.PopoverState,
+    previous: menubar_state.PopoverState,
+    provider: str,
+    intended_source: str | None,
+    *,
+    preserve_previous: bool = True,
+) -> None:
+    previous_sources = previous.provider_sources
+    metadata = previous_sources.get(provider)
+    if preserve_previous and metadata is not None and metadata.source == intended_source:
+        _mark_previous_source_stale(state, previous, provider)
+        if provider == "claude":
+            state.claude_session, state.claude_weekly = (
+                previous.claude_session,
+                previous.claude_weekly,
+            )
+        elif provider == "codex":
+            state.codex_session, state.codex_weekly = (
+                previous.codex_session,
+                previous.codex_weekly,
+            )
+            state.codex_current_account = previous.codex_current_account
+        elif provider == "antigravity":
+            state.agy_session, state.agy_weekly = previous.agy_session, previous.agy_weekly
+            state.hide_agy = previous.hide_agy
+        elif provider == "grok":
+            state.grok_weekly = previous.grok_weekly
+            state.hide_grok = previous.hide_grok
+        return
+    state.provider_sources.pop(provider, None)
+    if intended_source == "ocx":
+        missing = menubar_state._missing_row
+        if provider == "claude":
+            state.claude_session = missing("Session", menubar_state.CLAUDE_COLOR, state.language)
+            state.claude_weekly = missing("Weekly", menubar_state.CLAUDE_COLOR, state.language)
+        elif provider == "codex":
+            state.codex_session = missing("Session", menubar_state.CODEX_COLOR, state.language)
+            state.codex_weekly = missing("Weekly", menubar_state.CODEX_COLOR, state.language)
+        elif provider == "antigravity":
+            state.hide_agy = True
+        elif provider == "grok":
+            state.hide_grok = True
+
+
+def _mark_previous_source_stale(
+    state: menubar_state.PopoverState,
+    previous: menubar_state.PopoverState,
+    provider: str,
+) -> None:
+    metadata = previous.provider_sources.get(provider)
+    if metadata is None:
+        return
+    state.provider_sources[provider] = menubar_state.ProviderSourceState(
+        source=metadata.source,
+        label=metadata.label,
+        freshness=(
+            metadata.freshness if metadata.freshness == "reauth_required" else "stale"
+        ),
+        age_text=metadata.age_text or menubar_state.format_human_time(0, state.language),
+    )

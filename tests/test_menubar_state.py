@@ -6,6 +6,7 @@
 
 from __future__ import annotations
 
+import json
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
@@ -284,6 +285,41 @@ def test_codex_rows_menu_prefers_session_when_present(
     )
 
     assert menu_pct == 12.0
+
+
+def test_project_ocx_codex_uses_aggregate_headline_and_keeps_current_account() -> None:
+    from loaders.ocx_quota import parse_ocx_quota_payload
+
+    fixture = Path(__file__).parent / "fixtures" / "ocx_provider_quota.json"
+    payload = json.loads(fixture.read_text(encoding="utf-8"))
+    snapshot = parse_ocx_quota_payload(payload, datetime(2026, 9, 5, tzinfo=UTC)).providers["codex"]
+
+    projection = menubar_state.project_ocx_quota(snapshot, "en", menubar_state.CODEX_COLOR)
+
+    assert projection.rows[0].percent == 6.0
+    assert projection.rows[1].percent == 12.0
+    assert projection.current_account is not None
+    assert projection.current_account.plan == "pro"
+    assert projection.current_account.rows[0].percent == 7.0
+    assert projection.current_account.rows[1].percent == 17.0
+    assert projection.source.source == "ocx"
+    assert projection.source.freshness == "fresh"
+
+
+def test_project_ocx_quota_preserves_valid_zero_without_reset() -> None:
+    from loaders.ocx_quota import parse_ocx_quota_payload
+
+    fixture = Path(__file__).parent / "fixtures" / "ocx_provider_quota.json"
+    payload = json.loads(fixture.read_text(encoding="utf-8"))
+    snapshot = parse_ocx_quota_payload(payload, datetime(2026, 9, 5, tzinfo=UTC)).providers[
+        "antigravity"
+    ]
+
+    projection = menubar_state.project_ocx_quota(snapshot, "en", menubar_state.AGY_COLOR)
+
+    assert projection.rows[0].percent == 0.0
+    assert projection.rows[0].available is True
+    assert projection.rows[0].reset_text == "Resets in --"
 
 
 def test_history_load_error_state_none_when_no_reason() -> None:
