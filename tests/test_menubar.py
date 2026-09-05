@@ -20,7 +20,7 @@ import quota.agy_window_keeper as agy_window_keeper
 import quota.window_keeper as window_keeper
 from installer import statusline_settings
 from loaders import codex_loader, grok_loader, history_loader
-from loaders.ocx_quota import OcxQuotaSnapshot
+from loaders.ocx_quota import NormalizedQuotaSnapshot, OcxQuotaSnapshot
 from menubar import actions as menubar_actions
 from menubar import agy as menubar_agy
 from menubar import app as menubar
@@ -3357,6 +3357,68 @@ def test_retained_codex_restores_credits_from_the_same_source_state(
     assert state.provider_sources["codex"].source == source
 
 
+@pytest.mark.parametrize("timestamp_kind", ["naive", "future"])
+def test_generic_preserve_rejects_invalid_or_future_source_timestamp(
+    timestamp_kind: str,
+) -> None:
+    now = datetime(2026, 9, 5, 12, tzinfo=UTC)
+    updated_at = (
+        now.replace(tzinfo=None)
+        if timestamp_kind == "naive"
+        else now + timedelta(seconds=1)
+    )
+    previous = menubar_state._empty_state("en")
+    previous.codex_session = menubar_state.QuotaRowState(
+        "Session", 12.0, "12% used", "Resets in 1h", menubar_state.CODEX_COLOR
+    )
+    previous.provider_sources["codex"] = menubar_state.ProviderSourceState(
+        "ocx", "OCX", "fresh", None, updated_at
+    )
+    state = menubar_state._empty_state("en")
+
+    menubar_refresh._preserve_or_clear_provider(
+        state, previous, "codex", "ocx", now=now.timestamp()
+    )
+
+    assert state.codex_session.available is False
+    assert "codex" not in state.provider_sources
+
+
+@pytest.mark.parametrize(
+    ("age", "expected"),
+    [
+        (timedelta(0), True),
+        (timedelta(hours=24), True),
+        (timedelta(hours=24, microseconds=1), False),
+        (timedelta(microseconds=-1), False),
+    ],
+)
+def test_source_stale_window_has_closed_zero_and_twenty_four_hour_boundaries(
+    age: timedelta, expected: bool
+) -> None:
+    now = datetime(2026, 9, 5, 12, tzinfo=UTC)
+    metadata = menubar_state.ProviderSourceState(
+        "ocx", "OCX", "fresh", None, now - age
+    )
+
+    assert menubar_refresh._source_is_within_stale_window(
+        metadata, now.timestamp()
+    ) is expected
+
+
+def test_source_stale_window_rejects_timestamp_conversion_failure() -> None:
+    class OutOfRangeTimestamp(datetime):
+        def timestamp(self) -> float:
+            raise OverflowError("outside platform timestamp range")
+
+    updated_at = OutOfRangeTimestamp(2026, 9, 5, tzinfo=UTC)
+    metadata = menubar_state.ProviderSourceState(
+        "ocx", "OCX", "fresh", None, updated_at
+    )
+
+    assert not menubar_refresh._source_is_within_stale_window(metadata, 0.0)
+
+
 def test_ocx_selection_replaces_legacy_native_stale_markers(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -3499,6 +3561,61 @@ def test_openrouter_reauth_discards_balance_older_than_twenty_four_hours(
     previous.provider_sources["openrouter"] = menubar_state.ProviderSourceState(
         "ocx", "OCX", "fresh", None, now - timedelta(hours=25)
     )
+
+    class Delegate:
+        language = "en"
+        latest_state = previous
+
+    state = menubar_state._empty_state("en")
+    sources = menubar_refresh.RefreshSources(
+        {}, None, menubar_agy.AgyRefreshResult(None, True),
+        menubar_agy.fallback_projection("en"), menubar_grok.GrokRefreshResult(None, True),
+        menubar_grok.fallback_projection("en"), False, ocx,
+    )
+    menubar_refresh._project_selected_quota_sources(
+        cast(Any, Delegate()), sources, state, PollOutcome(PollState.TOKEN_ERROR)
+    )
+
+    assert state.openrouter is not previous.openrouter
+    assert state.openrouter is not None
+    assert state.openrouter.headline == "unavailable"
+    assert state.provider_sources["openrouter"].freshness == "reauth_required"
+
+
+@pytest.mark.parametrize("timestamp_kind", ["naive", "future"])
+def test_openrouter_reauth_rejects_invalid_or_future_previous_quota_timestamp(
+    monkeypatch: pytest.MonkeyPatch,
+    timestamp_kind: str,
+) -> None:
+    now = datetime(2026, 9, 5, 12, tzinfo=UTC)
+    previous_updated_at = (
+        now.replace(tzinfo=None)
+        if timestamp_kind == "naive"
+        else now + timedelta(seconds=1)
+    )
+    reauth = NormalizedQuotaSnapshot(
+        provider="openrouter",
+        source="ocx",
+        source_label="OCX",
+        windows=(),
+        account_credits_usd=None,
+        key_budget_usd=None,
+        updated_at=now,
+        freshness="reauth_required",
+        provenance=None,
+        details=MappingProxyType({}),
+    )
+    ocx = OcxQuotaSnapshot(MappingProxyType({"openrouter": reauth}), now, now)
+    previous = menubar_state._empty_state("en")
+    previous.openrouter = menubar_state.OpenRouterState(
+        "$5.00", "$5.00", "$10.00", "$5.00", None, None, None, None, False
+    )
+    previous.provider_sources["openrouter"] = menubar_state.ProviderSourceState(
+        "ocx", "OCX", "fresh", None, previous_updated_at
+    )
+    monkeypatch.setattr(menubar_refresh.time, "time", lambda: now.timestamp())
+    monkeypatch.setattr(menubar_refresh, "_quota_source_mode", lambda *_: "native")
+    monkeypatch.setattr(menubar_refresh, "_quota_last_source", lambda *_: None)
 
     class Delegate:
         language = "en"

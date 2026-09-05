@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import math
 import os
 import time
 from collections.abc import Coroutine
@@ -600,12 +601,10 @@ def _source_with_freshness(
     *,
     now: float | None = None,
 ) -> menubar_state.ProviderSourceState:
-    current_time = time.time() if now is None else now
+    age_seconds = _source_age_seconds(metadata, now)
     age_text = (
-        menubar_state.format_human_time(
-            max(0.0, current_time - metadata.updated_at.timestamp()), language
-        )
-        if metadata.updated_at is not None
+        menubar_state.format_human_time(age_seconds, language)
+        if age_seconds is not None and age_seconds >= 0
         else None
     )
     return menubar_state.ProviderSourceState(
@@ -621,10 +620,28 @@ def _source_is_within_stale_window(
     metadata: menubar_state.ProviderSourceState,
     now: float | None,
 ) -> bool:
-    if metadata.updated_at is None:
-        return False
+    age_seconds = _source_age_seconds(metadata, now)
+    return age_seconds is not None and 0 <= age_seconds <= 24 * 60 * 60
+
+
+def _source_age_seconds(
+    metadata: menubar_state.ProviderSourceState,
+    now: float | None,
+) -> float | None:
+    updated_at = metadata.updated_at
+    if updated_at is None:
+        return None
     current_time = time.time() if now is None else now
-    return current_time - metadata.updated_at.timestamp() <= 24 * 60 * 60
+    try:
+        if updated_at.tzinfo is None or updated_at.utcoffset() is None:
+            return None
+        updated_timestamp = updated_at.timestamp()
+    except (OSError, OverflowError, TypeError, ValueError):
+        return None
+    if not math.isfinite(current_time) or not math.isfinite(updated_timestamp):
+        return None
+    age_seconds = current_time - updated_timestamp
+    return age_seconds if math.isfinite(age_seconds) else None
 
 
 def _apply_legacy_ocx_stale(
