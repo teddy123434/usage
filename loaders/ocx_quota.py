@@ -149,20 +149,13 @@ def parse_ocx_quota_payload(payload: object, now: datetime) -> OcxQuotaSnapshot:
             snapshot = _parse_provider_report(wire_provider, provider, report)
         except (TypeError, ValueError, OverflowError):
             snapshot = _unavailable(provider, cache_written_at)
-        if snapshot.freshness == "fresh" and provider in reauth:
-            snapshot = NormalizedQuotaSnapshot(
-                provider=snapshot.provider,
-                source=snapshot.source,
-                source_label=snapshot.source_label,
-                windows=snapshot.windows,
-                account_credits_usd=snapshot.account_credits_usd,
-                key_budget_usd=snapshot.key_budget_usd,
-                updated_at=snapshot.updated_at,
-                freshness="reauth_required",
-                provenance=snapshot.provenance,
-                details=snapshot.details,
-            )
+        if provider in reauth:
+            snapshot = _with_reauth(snapshot, reauth[provider])
         providers[provider] = snapshot
+
+    for provider, observed_at in reauth.items():
+        if provider not in providers:
+            providers[provider] = _with_reauth(_unavailable(provider, observed_at), observed_at)
 
     return OcxQuotaSnapshot(
         providers=MappingProxyType(providers),
@@ -186,6 +179,8 @@ def _parse_provider_report(
     windows = _quota_windows(quota)
     account_credits = _account_credits(quota.get("accountCreditsUsd"))
     key_budget = _key_budget(quota.get("creditsUsd"))
+    if not windows and account_credits is None and key_budget is None:
+        raise ValueError("quota report contains no displayable quota data")
     provenance_raw = report.get("source")
     provenance = (
         provenance_raw
@@ -378,21 +373,39 @@ def _quota_window_detail(value: object) -> _ImmutableMap:
     return MappingProxyType(safe)
 
 
-def _reauth_providers(value: object) -> frozenset[LogicalProvider]:
+def _reauth_providers(value: object) -> Mapping[LogicalProvider, datetime]:
     if not isinstance(value, list):
-        return frozenset()
-    providers: set[LogicalProvider] = set()
+        return MappingProxyType({})
+    providers: dict[LogicalProvider, datetime] = {}
     for status in value:
         if not isinstance(status, dict) or status.get("status") != "reauth_required":
             continue
         wire_provider = status.get("provider")
         if isinstance(wire_provider, str) and wire_provider in _PROVIDER_MAP:
             try:
-                _timestamp(status.get("observedAt"))
+                observed_at = _timestamp(status.get("observedAt"))
             except (TypeError, ValueError, OverflowError):
                 continue
-            providers.add(_PROVIDER_MAP[wire_provider])
-    return frozenset(providers)
+            providers[_PROVIDER_MAP[wire_provider]] = observed_at
+    return MappingProxyType(providers)
+
+
+def _with_reauth(
+    snapshot: NormalizedQuotaSnapshot,
+    observed_at: datetime,
+) -> NormalizedQuotaSnapshot:
+    return NormalizedQuotaSnapshot(
+        provider=snapshot.provider,
+        source=snapshot.source,
+        source_label=snapshot.source_label,
+        windows=snapshot.windows,
+        account_credits_usd=snapshot.account_credits_usd,
+        key_budget_usd=snapshot.key_budget_usd,
+        updated_at=observed_at,
+        freshness="reauth_required",
+        provenance=snapshot.provenance,
+        details=snapshot.details,
+    )
 
 
 def _unavailable(provider: LogicalProvider, now: datetime) -> NormalizedQuotaSnapshot:

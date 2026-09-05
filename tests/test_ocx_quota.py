@@ -143,6 +143,65 @@ def test_reauth_status_changes_only_that_provider_and_drops_status_text() -> Non
     assert "redacted fixture text" not in repr(result)
 
 
+def test_status_only_reauth_creates_immutable_non_displayable_provider_snapshot() -> None:
+    payload = {
+        "generatedAt": 1_788_540_000_001,
+        "reports": [],
+        "statuses": [
+            {
+                "provider": "xai",
+                "status": "reauth_required",
+                "observedAt": 1_788_540_000_000,
+                "body": "must not survive",
+            }
+        ],
+    }
+
+    result = parse_ocx_quota_payload(payload, _NOW)
+
+    assert tuple(result.providers) == ("grok",)
+    grok = result.providers["grok"]
+    assert grok.freshness == "reauth_required"
+    assert grok.updated_at == datetime(2026, 9, 4, 16, 40, tzinfo=UTC)
+    assert grok.windows == ()
+    assert grok.account_credits_usd is None
+    assert grok.key_budget_usd is None
+    assert "must not survive" not in repr(result)
+    with pytest.raises(TypeError):
+        result.providers["codex"] = grok  # type: ignore[index]
+
+
+def test_explicit_reauth_status_wins_over_a_malformed_provider_report() -> None:
+    payload = _one_report(
+        "anthropic",
+        {"weeklyPercent": True, "updatedAt": 1_788_540_000_000},
+    )
+    payload["statuses"] = [
+        {
+            "provider": "anthropic",
+            "status": "reauth_required",
+            "observedAt": 1_788_540_003_000,
+            "message": "must not survive",
+        }
+    ]
+
+    claude = parse_ocx_quota_payload(payload, _NOW).providers["claude"]
+
+    assert claude.freshness == "reauth_required"
+    assert claude.updated_at == datetime(2026, 9, 4, 16, 40, 3, tzinfo=UTC)
+    assert claude.windows == ()
+    assert "must not survive" not in repr(claude)
+
+
+def test_updated_at_only_quota_is_unavailable_not_fresh() -> None:
+    payload = _one_report("xai", {"updatedAt": 1_788_540_000_000})
+
+    grok = parse_ocx_quota_payload(payload, _NOW).providers["grok"]
+
+    assert grok.freshness == "unavailable"
+    assert grok.windows == ()
+
+
 @pytest.mark.parametrize("payload", [None, [], {"reports": {}}, {"reports": "rows"}])
 def test_parse_rejects_invalid_top_level_contract(payload: object) -> None:
     with pytest.raises(ValueError):
@@ -157,16 +216,16 @@ def test_bad_percentage_makes_only_its_provider_unavailable(bad_value: object) -
     payload = _payload()
     reports = payload["reports"]
     assert isinstance(reports, list)
-    anthropic = reports[1]
-    assert isinstance(anthropic, dict)
-    quota = anthropic["quota"]
+    xai = reports[3]
+    assert isinstance(xai, dict)
+    quota = xai["quota"]
     assert isinstance(quota, dict)
-    quota["fiveHourPercent"] = bad_value
+    quota["weeklyPercent"] = bad_value
 
     result = parse_ocx_quota_payload(payload, _NOW)
 
-    assert result.providers["claude"].freshness == "unavailable"
-    assert result.providers["claude"].windows == ()
+    assert result.providers["grok"].freshness == "unavailable"
+    assert result.providers["grok"].windows == ()
     assert result.providers["codex"].freshness == "fresh"
 
 
@@ -175,13 +234,13 @@ def test_bad_timestamp_makes_only_its_provider_unavailable(bad_timestamp: object
     payload = _payload()
     reports = payload["reports"]
     assert isinstance(reports, list)
-    anthropic = reports[1]
-    assert isinstance(anthropic, dict)
-    anthropic["updatedAt"] = bad_timestamp
+    xai = reports[3]
+    assert isinstance(xai, dict)
+    xai["updatedAt"] = bad_timestamp
 
     result = parse_ocx_quota_payload(payload, _NOW)
 
-    assert result.providers["claude"].freshness == "unavailable"
+    assert result.providers["grok"].freshness == "unavailable"
     assert result.providers["codex"].freshness == "fresh"
 
 
@@ -198,6 +257,78 @@ def test_bad_credit_number_is_not_confused_with_zero() -> None:
 
     assert result.providers["openrouter"].freshness == "unavailable"
     assert result.providers["openrouter"].account_credits_usd is None
+
+
+def test_openrouter_key_budget_preserves_complete_wire_model() -> None:
+    payload = _one_report(
+        "openrouter",
+        {
+            "creditsUsd": {
+                "used": 3.5,
+                "limit": 20,
+                "remaining": 16.5,
+                "percent": 17.5,
+                "unlimited": False,
+                "resetAt": 1_791_132_000_000,
+                "expiresAt": 1_793_810_400_000,
+                "resetInterval": "monthly",
+            },
+            "updatedAt": 1_788_540_000_000,
+        },
+    )
+
+    budget = parse_ocx_quota_payload(payload, _NOW).providers["openrouter"].key_budget_usd
+
+    assert budget is not None
+    assert budget.used == 3.5
+    assert budget.unlimited is False
+    assert budget.reset_at == datetime(2026, 10, 4, 16, 40, tzinfo=UTC)
+    assert budget.expires_at == datetime(2026, 11, 4, 16, 40, tzinfo=UTC)
+
+
+def test_openrouter_preserves_negative_account_balance_and_valid_monetary_zeroes() -> None:
+    debt_payload = _one_report(
+        "openrouter",
+        {
+            "accountCreditsUsd": {
+                "totalCredits": 10,
+                "totalUsage": 12.5,
+                "remaining": -2.5,
+            },
+            "updatedAt": 1_788_540_000_000,
+        },
+    )
+    zero_payload = _one_report(
+        "openrouter",
+        {
+            "accountCreditsUsd": {"totalCredits": 0, "totalUsage": 0, "remaining": 0},
+            "creditsUsd": {
+                "used": 0,
+                "limit": 0,
+                "remaining": 0,
+                "percent": 0,
+                "unlimited": True,
+                "resetInterval": "none",
+            },
+            "updatedAt": 1_788_540_000_000,
+        },
+    )
+
+    debt = parse_ocx_quota_payload(debt_payload, _NOW).providers["openrouter"]
+    zero = parse_ocx_quota_payload(zero_payload, _NOW).providers["openrouter"]
+
+    assert debt.account_credits_usd is not None
+    assert debt.account_credits_usd.remaining == -2.5
+    assert zero.account_credits_usd is not None
+    assert zero.account_credits_usd.total_credits == 0.0
+    assert zero.account_credits_usd.total_usage == 0.0
+    assert zero.account_credits_usd.remaining == 0.0
+    assert zero.key_budget_usd is not None
+    assert zero.key_budget_usd.used == 0.0
+    assert zero.key_budget_usd.limit == 0.0
+    assert zero.key_budget_usd.remaining == 0.0
+    assert zero.key_budget_usd.percent == 0.0
+    assert zero.key_budget_usd.unlimited is True
 
 
 def test_models_and_nested_collections_are_immutable() -> None:
