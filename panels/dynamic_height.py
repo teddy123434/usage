@@ -19,9 +19,8 @@ CONTENT_HEIGHT_SCRIPT = """
     var root = document.documentElement;
     var zoom = root.style.zoom;
     var body = document.body;
-    // usageApplyPanelZoom expands this layout box while Chromium zoom is
-    // active. Release it as well as zoom, otherwise a subsequent measurement
-    // would report the compensated height rather than the natural content.
+    // Release any stale layout compensation left by an older panel document
+    // while measuring natural content at a fixed scale.
     var bodyHeight = body ? body.style.height : "";
     root.style.zoom = "normal";
     if (body) body.style.height = "";
@@ -139,23 +138,19 @@ CONTENT_HEIGHT_SCRIPT = """
     lastPostedHeight = null;
     requestContentHeight();
   };
-  window.usageApplyPanelZoom = function(scale, naturalHeight) {
-    var value = Number(scale);
-    var root = document.documentElement;
-    var body = document.body;
-    var height = Number(naturalHeight);
-    var scaled = Number.isFinite(value) && value > 0 && value !== 1;
-    root.style.zoom = scaled ? String(value) : "normal";
-    // Chromium's CSS zoom scales the paint output but leaves its layout box at
-    // the viewport height. Give that box the known natural content height so
-    // flex children are not shrunk and clipped before they are painted.
-    // naturalHeight is optional to keep pages invoked with the old one-arg
-    // signature working; a missing value simply keeps the legacy zoom-only
-    // behavior. Returning to scale 1 always removes the compensation.
-    if (body) {
-      body.style.height = scaled && Number.isFinite(height) && height > 0
-        ? String(height) + "px" : "";
-    }
+  window.usageApplyPanelViewport = function usageApplyPanelViewport(scrollable) {
+    const root = document.documentElement;
+    const body = document.body;
+    const y = window.scrollY;
+    root.style.zoom = "normal";
+    root.style.overflowX = "hidden";
+    root.style.overflowY = scrollable ? "auto" : "hidden";
+    root.style.scrollbarGutter = "auto";
+    if (body) body.style.height = "";
+    requestAnimationFrame(() => {
+      const maxY = Math.max(0, root.scrollHeight - root.clientHeight);
+      window.scrollTo(0, Math.min(y, maxY));
+    });
     return true;
   };
   window.usageApplyState = function usageApplyStateWithDynamicHeight(state) {

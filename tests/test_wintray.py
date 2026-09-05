@@ -325,6 +325,9 @@ def test_panel_html_installs_webkit_shim_without_changing_asset() -> None:
     assert "cursor: grab" in html
     assert "cursor: grabbing" in html
     assert "usageApplyStateWithDynamicHeight" in html
+    assert "PageUp" not in html
+    assert "PageDown" not in html
+    assert "addEventListener('wheel'" not in html
 
 
 def test_native_drag_region_is_separate_from_quota_cards() -> None:
@@ -643,7 +646,7 @@ def test_panel_position_is_clamped_and_persisted_on_hide(
 
     controller._place_window()
 
-    assert moves == [(634, 12)]
+    assert moves == [(608, 12)]
     window.x, window.y = 123, 234
     controller.show_panel()
     assert prefs._load_preferences()["usage.windowPosition"] == {"x": 123, "y": 234}
@@ -716,17 +719,17 @@ def test_content_height_keeps_the_panels_natural_height(
     assert controller.panel_height() == 1000
 
 
-def test_failed_panel_zoom_does_not_resize_window_to_scaled_height(
+def test_failed_panel_viewport_does_not_resize_tall_window(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     mutations: list[tuple[str, int, int]] = []
-    zoom_ready = False
+    viewport_ready = False
 
     javascript: list[str] = []
 
     def evaluate_js(code: str) -> bool:
         javascript.append(code)
-        return zoom_ready
+        return viewport_ready
 
     window = SimpleNamespace(
         x=0,
@@ -746,12 +749,13 @@ def test_failed_panel_zoom_does_not_resize_window_to_scaled_height(
     controller._place_window()
 
     assert mutations == []
-    assert "usageApplyPanelZoom(0.776, 1000)" in javascript[-1]
+    assert "usageApplyPanelViewport(true)" in javascript[-1]
+    assert "usageApplyPanelZoom" not in javascript[-1]
 
-    zoom_ready = True
+    viewport_ready = True
     controller._place_window()
 
-    assert mutations == [("resize", 295, 776), ("move", 693, 12)]
+    assert mutations == [("resize", 380, 776), ("move", 608, 12)]
 
 
 def test_background_window_mutation_is_dispatched_to_ui_thread(

@@ -4,49 +4,38 @@
 from __future__ import annotations
 
 import math
+from dataclasses import dataclass
 from typing import cast
 
-MIN_PANEL_SCALE = 0.6
+
+@dataclass(frozen=True, slots=True)
+class PanelViewport:
+    width: float
+    height: float
+    natural_height: float
+    scrollable: bool
 
 
-def fit_scale(natural_height: object, maximum: object) -> float:
-    """Ratio that fits natural_height into maximum, never below MIN_PANEL_SCALE."""
-    if (
-        isinstance(natural_height, bool)
-        or isinstance(maximum, bool)
-        or not isinstance(natural_height, int | float)
-        or not isinstance(maximum, int | float)
+def _positive_finite_number(value: object) -> bool:
+    return (
+        not isinstance(value, bool)
+        and isinstance(value, int | float)
+        and math.isfinite(value)
+        and value > 0
+    )
+
+
+def fit_panel_viewport(
+    natural_width: object, natural_height: object, maximum_height: object
+) -> PanelViewport:
+    """Cap panel height without scaling its natural width or document content."""
+    width = cast(float, natural_width)
+    natural = cast(float, natural_height)
+    if not _positive_finite_number(natural_height) or not _positive_finite_number(
+        maximum_height
     ):
-        return 1.0
-    natural = float(natural_height)
-    available = float(maximum)
-    if not math.isfinite(natural) or natural <= 0 or not math.isfinite(available) or available <= 0:
-        return 1.0
-    if natural <= available:
-        return 1.0
-    return max(MIN_PANEL_SCALE, available / natural)
+        return PanelViewport(width, natural, natural, False)
 
-
-def fit_panel_size(
-    natural_width: object, natural_height: object, maximum: object
-) -> tuple[float, float, float]:
-    """Return (width, height, scale) fitted into maximum, height never exceeding it."""
-    scale = fit_scale(natural_height, maximum)
-    if (
-        isinstance(natural_width, bool)
-        or not isinstance(natural_width, int | float)
-        or not math.isfinite(natural_width)
-        or natural_width <= 0
-    ):
-        width = natural_width
-    else:
-        width = natural_width * scale
-    height = cast(float, natural_height) * scale
-    if (
-        not isinstance(maximum, bool)
-        and isinstance(maximum, int | float)
-        and math.isfinite(maximum)
-        and maximum > 0
-    ):
-        height = min(height, maximum)
-    return cast(float, width), height, scale
+    available = float(cast(int | float, maximum_height))
+    height = float(cast(int | float, natural_height))
+    return PanelViewport(width, min(height, available), height, height > available)

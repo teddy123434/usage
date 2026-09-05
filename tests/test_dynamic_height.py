@@ -36,10 +36,13 @@ def test_script_wraps_state_application_and_measures_without_height_constraints(
     assert "window.usageInvalidateContentHeight" in CONTENT_HEIGHT_SCRIPT
     assert "lastPostedHeight = null;" in CONTENT_HEIGHT_SCRIPT
     assert 'root.style.zoom = "normal"' in CONTENT_HEIGHT_SCRIPT
-    assert "window.usageApplyPanelZoom" in CONTENT_HEIGHT_SCRIPT
-    assert "function(scale, naturalHeight)" in CONTENT_HEIGHT_SCRIPT
+    assert "window.usageApplyPanelViewport" in CONTENT_HEIGHT_SCRIPT
+    assert "function usageApplyPanelViewport(scrollable)" in CONTENT_HEIGHT_SCRIPT
     assert 'body.style.height = ""' in CONTENT_HEIGHT_SCRIPT
-    assert 'String(height) + "px"' in CONTENT_HEIGHT_SCRIPT
+    assert 'root.style.overflowX = "hidden"' in CONTENT_HEIGHT_SCRIPT
+    assert 'root.style.overflowY = scrollable ? "auto" : "hidden"' in CONTENT_HEIGHT_SCRIPT
+    assert 'root.style.scrollbarGutter = "auto"' in CONTENT_HEIGHT_SCRIPT
+    assert "window.scrollTo(0, Math.min(y, maxY))" in CONTENT_HEIGHT_SCRIPT
     assert "innerHeight /" not in CONTENT_HEIGHT_SCRIPT
     # Panels draw their edges with padding on whichever layer wraps .wrap, and
     # the viewport-based panels nest an extra padded .viewport in between, so
@@ -50,8 +53,8 @@ def test_script_wraps_state_application_and_measures_without_height_constraints(
     assert "paddingBottom" in CONTENT_HEIGHT_SCRIPT
     assert 'querySelectorAll("[data-usage-height-floor]")' in CONTENT_HEIGHT_SCRIPT
     assert 'floor.element.style.minHeight = floor.height + "px"' in CONTENT_HEIGHT_SCRIPT
-    # Measuring must release the Chromium-only height compensation before it
-    # reads the natural layout, then put it back before the next paint.
+    # Measuring must release stale height compensation before it reads the
+    # natural layout, then put it back before the next paint.
     assert "var bodyHeight = body ? body.style.height" in CONTENT_HEIGHT_SCRIPT
     assert "body.style.height = bodyHeight" in CONTENT_HEIGHT_SCRIPT
 

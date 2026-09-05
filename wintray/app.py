@@ -58,7 +58,7 @@ from menubar.prefs import (
 )
 from menubar.quota_sources import load_route_facts
 from panels.dynamic_height import clamp_content_height, inject_content_height_script
-from panels.panel_scale import fit_panel_size, fit_scale
+from panels.panel_scale import fit_panel_viewport
 from panels.payload import _load_panel_html, _state_payload
 from prefs import _load_preferences, _save_preferences
 from pricing import calculate_cost
@@ -815,7 +815,7 @@ class _WindowsTrayController:
         if rounded == self._content_height:
             # A newly loaded panel can have the same natural height as the
             # previous one. Its first placement may have arrived before the
-            # page installed usageApplyPanelZoom, so give that document one
+            # page installed usageApplyPanelViewport, so give that document one
             # more chance to converge when it reports its own height.
             if self.visible:
                 self._place_window()
@@ -824,16 +824,16 @@ class _WindowsTrayController:
         if self.visible:
             self._place_window()
 
-    def _apply_panel_zoom(self, scale: float) -> bool:
+    def _apply_panel_viewport(self, scrollable: bool) -> bool:
         if self.window is not None and hasattr(self.window, "evaluate_js"):
             try:
                 result = self.window.evaluate_js(
-                    "typeof window.usageApplyPanelZoom === 'function' && "
-                    f"window.usageApplyPanelZoom({scale}, {self.panel_height()})"
+                    "typeof window.usageApplyPanelViewport === 'function' && "
+                    f"window.usageApplyPanelViewport({str(scrollable).lower()})"
                 )
                 return result is True
             except Exception:
-                logger.exception("Unable to apply panel zoom")
+                logger.exception("Unable to apply panel viewport")
             return False
         # Lightweight window doubles do not embed a browser. There is no DOM
         # to scale, so geometry-only tests can proceed normally.
@@ -996,9 +996,9 @@ class _WindowsTrayController:
             if work_area is not None
             else float(PANEL_HEIGHTS[self.active_panel_id])
         )
-        scale = fit_scale(self.panel_height(), maximum)
-        zoom_applied = self._apply_panel_zoom(scale)
-        if scale < 1.0 and not zoom_applied:
+        viewport = fit_panel_viewport(PANEL_WIDTH, self.panel_height(), maximum)
+        viewport_applied = self._apply_panel_viewport(viewport.scrollable)
+        if viewport.scrollable and not viewport_applied:
             return
         if force_default:
             self._dispatch_window_mutation(
@@ -1031,9 +1031,9 @@ class _WindowsTrayController:
         left, top, right, bottom = work_area
         maximum = float(bottom - top - 24)
         natural_height = self.panel_height()
-        fitted_width, fitted_height, scale = fit_panel_size(PANEL_WIDTH, natural_height, maximum)
-        width = int(round(fitted_width))
-        height = int(round(fitted_height))
+        viewport = fit_panel_viewport(PANEL_WIDTH, natural_height, maximum)
+        width = int(round(viewport.width))
+        height = int(round(viewport.height))
         self.window.resize(width, height)
         position = anchor if anchor is not None else self._default_window_position(
             work_area, width, height

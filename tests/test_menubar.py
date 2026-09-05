@@ -249,7 +249,7 @@ def test_format_percent() -> None:
     assert menubar._format_percent(0.0) == "0"
 
 
-def test_apply_panel_scale_caches_only_after_successful_javascript(
+def test_apply_panel_viewport_caches_only_after_successful_javascript(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     calls: list[tuple[str, Any]] = []
@@ -262,25 +262,81 @@ def test_apply_panel_scale_caches_only_after_successful_javascript(
     controller = menubar_popover.PopoverViewController.alloc().init()
     controller.latest_state = object()
     controller.panel = panel
-    controller.panel_scales = {}
+    controller.panel_viewports = {}
     controller.content_view = view
 
-    monkeypatch.setattr(menubar_popover, "panel_scale", lambda state, active_panel: 0.7785)
+    monkeypatch.setattr(
+        menubar_popover,
+        "panel_viewport",
+        lambda state, active_panel: SimpleNamespace(scrollable=True),
+    )
     monkeypatch.setattr(
         panel_window_state,
         "resolve_panel_size",
         lambda state, active_panel: (320.0, 1000.0),
     )
-    menubar_popover.PopoverViewController.applyPanelScale(controller)
+    menubar_popover.PopoverViewController.applyPanelViewport(controller)
     calls[-1][1](False, None)
 
-    assert controller.panel_scales == {}
+    assert controller.panel_viewports == {}
 
-    menubar_popover.PopoverViewController.applyPanelScale(controller)
+    menubar_popover.PopoverViewController.applyPanelViewport(controller)
     calls[-1][1](True, None)
 
-    assert controller.panel_scales == {"classic": (0.7785, 1000.0)}
-    assert "usageApplyPanelZoom(0.7785, 1000.0)" in calls[-1][0]
+    assert controller.panel_viewports == {"classic": (True, 1000.0)}
+    assert "usageApplyPanelViewport(true)" in calls[-1][0]
+    assert "usageApplyPanelZoom" not in calls[-1][0]
+
+
+def test_cached_panel_viewport_does_not_reset_scroll_on_refresh_or_theme_return(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls: list[str] = []
+    panel = SimpleNamespace(id="classic")
+    controller = menubar_popover.PopoverViewController.alloc().init()
+    controller.latest_state = object()
+    controller.panel = panel
+    controller.panel_viewports = {"classic": (True, 1000.0)}
+    controller.content_view = SimpleNamespace(
+        evaluateJavaScript_completionHandler_=lambda script, completion: calls.append(script)
+    )
+    monkeypatch.setattr(
+        menubar_popover,
+        "panel_viewport",
+        lambda state, active_panel: SimpleNamespace(scrollable=True),
+    )
+    monkeypatch.setattr(
+        panel_window_state,
+        "resolve_panel_size",
+        lambda state, active_panel: (380.0, 1000.0),
+    )
+
+    menubar_popover.PopoverViewController.applyPanelViewport(controller)
+
+    assert calls == []
+
+
+def test_popover_viewport_keeps_width_and_caps_to_visible_frame(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    state = object()
+    panel = SimpleNamespace(id="classic")
+    screen = SimpleNamespace(visibleFrame=lambda: SimpleNamespace(size=SimpleNamespace(height=945)))
+    monkeypatch.setattr(menubar_popover, "NSApp", lambda: object())
+    monkeypatch.setattr(
+        menubar_popover, "NSScreen", SimpleNamespace(mainScreen=lambda: screen)
+    )
+    monkeypatch.setattr(
+        panel_window_state,
+        "resolve_panel_size",
+        lambda current_state, active_panel: (380.0, 1183.0),
+    )
+
+    viewport = menubar_popover.panel_viewport(state, panel)
+    size = menubar_popover._popover_size(state, panel)
+
+    assert (size.width, size.height) == (380.0, 921.0)
+    assert viewport.scrollable is True
 
 
 def test_bar_color_thresholds() -> None:

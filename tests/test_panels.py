@@ -8,6 +8,8 @@ from __future__ import annotations
 
 import json
 import re
+import shutil
+import subprocess
 from pathlib import Path
 from typing import Any, cast
 
@@ -294,6 +296,163 @@ def test_theme_html_does_not_implement_scrolling_or_zoom() -> None:
         assert "overflow-y" not in html, filename
         assert "scrollbar" not in html, filename
         assert "zoom:" not in html, filename
+
+
+def test_shared_viewport_injection_owns_overflow_without_input_blockers() -> None:
+    script = CONTENT_HEIGHT_SCRIPT
+
+    assert "window.usageApplyPanelViewport" in script
+    assert 'root.style.zoom = "normal"' in script
+    assert 'root.style.overflowX = "hidden"' in script
+    assert 'root.style.overflowY = scrollable ? "auto" : "hidden"' in script
+    assert 'root.style.scrollbarGutter = "auto"' in script
+    assert 'if (body) body.style.height = ""' in script
+    assert "const y = window.scrollY" in script
+    assert "Math.max(0, root.scrollHeight - root.clientHeight)" in script
+    assert "window.scrollTo(0, Math.min(y, maxY))" in script
+    assert "usageApplyPanelZoom" not in script
+    assert 'addEventListener("wheel"' not in script
+    assert 'addEventListener("keydown"' not in script
+    assert "preventDefault" not in script
+
+
+def test_shared_viewport_preserves_and_clamps_scroll_after_content_changes() -> None:
+    node = shutil.which("node")
+    if node is None:
+        pytest.skip("node is required for the executable viewport test")
+    script = CONTENT_HEIGHT_SCRIPT.split("<script>", 1)[1].split("</script>", 1)[0]
+    harness = f"""
+const frames = [];
+const scrollCalls = [];
+const style = {{}};
+const body = {{ style: {{ height: "4000px" }} }};
+const root = {{ style, scrollHeight: 1400, clientHeight: 500 }};
+global.document = {{
+  documentElement: root,
+  body,
+  querySelector() {{ return null; }},
+  fonts: null
+}};
+global.MutationObserver = undefined;
+global.ResizeObserver = undefined;
+global.requestAnimationFrame = (callback) => {{ frames.push(callback); }};
+global.window = {{
+  scrollY: 700,
+  scrollTo(x, y) {{ scrollCalls.push([x, y]); }},
+  usageApplyState() {{ return true; }}
+}};
+eval({json.dumps(script)});
+while (frames.length) frames.shift()();
+window.usageApplyPanelViewport(true);
+frames.shift()();
+root.scrollHeight = 620;
+window.scrollY = 700;
+window.usageApplyPanelViewport(true);
+frames.shift()();
+window.scrollY = 120;
+window.usageApplyPanelViewport(false);
+frames.shift()();
+console.log(JSON.stringify({{ style, bodyHeight: body.style.height, scrollCalls }}));
+"""
+    result = subprocess.run(
+        [node, "-e", harness],
+        check=False,
+        capture_output=True,
+        text=True,
+        timeout=10,
+    )
+
+    assert result.returncode == 0, result.stderr
+    actual = json.loads(result.stdout)
+    assert actual == {
+        "style": {
+            "zoom": "normal",
+            "overflowX": "hidden",
+            "overflowY": "hidden",
+            "scrollbarGutter": "auto",
+        },
+        "bodyHeight": "",
+        "scrollCalls": [[0, 700], [0, 120], [0, 120]],
+    }
+
+
+def test_footer_remains_in_document_flow_for_shared_scrolling() -> None:
+    assert "position" not in CONTENT_HEIGHT_SCRIPT
+    panel_dir = Path(__file__).resolve().parent.parent / "assets" / "panels"
+    for filename in NON_TALENT_PANEL_FILENAMES:
+        html = (panel_dir / filename).read_text(encoding="utf-8")
+        assert '<section class="footer"' in html, filename
+
+
+def test_window_drag_excludes_interactive_and_scrollable_descendants_only() -> None:
+    assert (
+        'event.target.closest(interactiveSelector) || isScrollable(event.target)'
+        in WINDOW_DRAG_SCRIPT
+    )
+
+
+def test_window_drag_runtime_keeps_blank_drag_and_rejects_interactive_scroll_targets() -> None:
+    node = shutil.which("node")
+    if node is None:
+        pytest.skip("node is required for the executable window-drag test")
+    script = WINDOW_DRAG_SCRIPT.split("<script>", 1)[1].split("</script>", 1)[0]
+    harness = f"""
+const messages = [];
+let listener;
+class Element {{
+  constructor(parentElement = null, closestMatch = false, scrollable = false) {{
+    this.parentElement = parentElement;
+    this.closestMatch = closestMatch;
+    this.scrollHeight = scrollable ? 200 : 100;
+    this.clientHeight = 100;
+    this.scrollWidth = 100;
+    this.clientWidth = 100;
+    this.overflowY = scrollable ? "auto" : "visible";
+    this.overflowX = "visible";
+  }}
+  closest() {{ return this.closestMatch ? this : null; }}
+}}
+const body = new Element();
+global.document = {{
+  body,
+  addEventListener(type, callback) {{ if (type === "mousedown") listener = callback; }}
+}};
+global.window = {{
+  getComputedStyle(element) {{
+    return {{ overflowY: element.overflowY, overflowX: element.overflowX }};
+  }},
+  webkit: {{
+    messageHandlers: {{ usage: {{ postMessage(message) {{ messages.push(message); }} }} }}
+  }}
+}};
+eval({json.dumps(script)});
+const blank = new Element(body);
+const nestedScroller = new Element(body, false, true);
+const nestedChild = new Element(nestedScroller);
+const button = new Element(body, true);
+listener({{ button: 0, target: nestedChild }});
+listener({{ button: 0, target: button }});
+listener({{ button: 0, target: blank }});
+console.log(JSON.stringify(messages));
+"""
+    result = subprocess.run(
+        [node, "-e", harness],
+        check=False,
+        capture_output=True,
+        text=True,
+        timeout=10,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert json.loads(result.stdout) == [
+        json.dumps({"action": "begin_window_drag"}, separators=(",", ":"))
+    ]
+    assert 'current !== document.body' in WINDOW_DRAG_SCRIPT
+    assert 'overflowY === "auto" || overflowY === "scroll"' in WINDOW_DRAG_SCRIPT
+    assert (
+        'bridge.postMessage(JSON.stringify({ action: "begin_window_drag" }))'
+        in WINDOW_DRAG_SCRIPT
+    )
 
 
 def test_state_payload_omits_codex_rows_with_empty_titles(
