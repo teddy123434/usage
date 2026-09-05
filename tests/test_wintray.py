@@ -339,9 +339,7 @@ def test_windows_shim_leaves_card_pointer_events_for_shared_reorder_runtime() ->
     node = shutil.which("node")
     if node is None:
         pytest.skip("node is required for the executable panel event-flow test")
-    shim = wintray.JS_SHIM
-    assert "addEventListener('pointerdown'" not in shim
-
+    shim = wintray.JS_SHIM.split("<script>", 1)[1].split("</script>", 1)[0]
     core = (
         Path(__file__).resolve().parent.parent / "assets" / "panels" / "panel_core.js"
     ).read_text(encoding="utf-8")
@@ -349,76 +347,238 @@ def test_windows_shim_leaves_card_pointer_events_for_shared_reorder_runtime() ->
     harness = r"""
 const listeners = {};
 const messages = [];
-const classList = () => ({ add() {}, remove() {}, toggle() {} });
-const style = { setProperty() {}, removeProperty() {} };
-const documentRoot = { style, classList: classList() };
-let runtime = false;
-const parent = { insertBefore() {} };
-function card(id) {
-  return {
-    dataset: { card: id }, classList: classList(), offsetParent: {}, parentElement: parent,
-    setPointerCapture() {}, releasePointerCapture() {}, hasPointerCapture() { return true; },
-    getBoundingClientRect() { return { top: 0, height: 10 }; }, querySelector() { return null; },
-    closest() { return this; }
-  };
+function makeStyle() {
+  return { setProperty() {}, removeProperty() {} };
 }
-const cards = ["claude", "codex", "agy", "grok", "openrouter"].map(card);
-const project = { parentElement: parent };
+function dataName(attribute) {
+  return attribute.slice(5).replace(/-([a-z])/g, (_, letter) => letter.toUpperCase());
+}
+function selectorMatches(element, selector) {
+  const simple = selector.trim().replace(/^:scope\s*>\s*/, "");
+  if (!simple || simple.includes(" ")) return false;
+  const attribute = simple.match(/\[([\w-]+)(?:="([^"]*)")?\]/);
+  if (attribute) {
+    const name = attribute[1];
+    const value = name.startsWith("data-")
+      ? element.dataset[dataName(name)]
+      : element.attributes[name];
+    if (value === undefined || (attribute[2] !== undefined && value !== attribute[2])) return false;
+  }
+  const tag = simple.match(/^[a-z]+/i);
+  if (tag && element.tagName !== tag[0].toUpperCase()) return false;
+  const className = simple.match(/\.([\w-]+)/);
+  return !className || element.classList.contains(className[1]);
+}
+class Element {
+  constructor(tagName = "div") {
+    this.tagName = tagName.toUpperCase();
+    this.parentElement = null;
+    this.children = [];
+    this.dataset = {};
+    this.attributes = {};
+    this.style = makeStyle();
+    this.hidden = false;
+    this.pointerIds = new Set();
+    this.classes = new Set();
+    this.classList = {
+      add: (...names) => names.forEach((name) => this.classes.add(name)),
+      remove: (...names) => names.forEach((name) => this.classes.delete(name)),
+      contains: (name) => this.classes.has(name),
+      toggle: (name, force) => {
+        const enabled = force === undefined ? !this.classes.has(name) : force;
+        enabled ? this.classes.add(name) : this.classes.delete(name);
+      }
+    };
+  }
+  set className(value) {
+    this.classes = new Set(String(value).split(/\s+/).filter(Boolean));
+  }
+  get className() { return [...this.classes].join(" "); }
+  get firstElementChild() { return this.children[0] || null; }
+  get offsetParent() { return this.hidden ? null : this.parentElement; }
+  append(...nodes) { nodes.forEach((node) => this.appendChild(node)); }
+  appendChild(node) {
+    if (node.parentElement) node.parentElement.removeChild(node);
+    this.children.push(node);
+    node.parentElement = this;
+    return node;
+  }
+  removeChild(node) {
+    const index = this.children.indexOf(node);
+    if (index >= 0) this.children.splice(index, 1);
+    node.parentElement = null;
+  }
+  insertBefore(node, target) {
+    if (node.parentElement) node.parentElement.removeChild(node);
+    const index = this.children.indexOf(target);
+    this.children.splice(index < 0 ? this.children.length : index, 0, node);
+    node.parentElement = this;
+  }
+  replaceChildren(...nodes) {
+    [...this.children].forEach((node) => this.removeChild(node));
+    this.append(...nodes);
+  }
+  remove() { if (this.parentElement) this.parentElement.removeChild(this); }
+  setAttribute(name, value) {
+    this.attributes[name] = String(value);
+    if (name.startsWith("data-")) this.dataset[dataName(name)] = String(value);
+  }
+  getAttribute(name) { return this.attributes[name] ?? null; }
+  contains(node) {
+    for (let current = node; current; current = current.parentElement) {
+      if (current === this) return true;
+    }
+    return false;
+  }
+  closest(selector) {
+    const selectors = selector.split(",");
+    for (let current = this; current; current = current.parentElement) {
+      if (selectors.some((candidate) => selectorMatches(current, candidate))) return current;
+    }
+    return null;
+  }
+  querySelectorAll(selector) {
+    const matches = [];
+    const selectors = selector.split(",");
+    const visit = (node) => {
+      node.children.forEach((child) => {
+        if (selectors.some((candidate) => selectorMatches(child, candidate))) matches.push(child);
+        visit(child);
+      });
+    };
+    visit(this);
+    return matches;
+  }
+  querySelector(selector) { return this.querySelectorAll(selector)[0] || null; }
+  addEventListener() {}
+  setPointerCapture(pointerId) { this.pointerIds.add(pointerId); }
+  releasePointerCapture(pointerId) { this.pointerIds.delete(pointerId); }
+  hasPointerCapture(pointerId) { return this.pointerIds.has(pointerId); }
+  getBoundingClientRect() {
+    const index = this.parentElement ? this.parentElement.children.indexOf(this) : 0;
+    return { top: index * 20, height: 10 };
+  }
+}
+const documentElement = new Element("html");
+const head = new Element("head");
+const body = new Element("body");
+const wrap = new Element("main");
+wrap.className = "wrap";
+documentElement.append(head, body);
+body.appendChild(wrap);
+const cards = ["claude", "codex", "agy", "grok", "openrouter"].map((id) => {
+  const element = new Element("section");
+  element.className = "card";
+  element.dataset.card = id;
+  const header = new Element("header");
+  header.className = "brand";
+  element.appendChild(header);
+  wrap.appendChild(element);
+  return element;
+});
+const project = new Element("section");
+project.dataset.card = "projects";
+wrap.appendChild(project);
 global.window = {
   PanelHooks: {},
-  webkit: { messageHandlers: { usage: { postMessage(message) { messages.push(message); } } } }
+  pywebview: { api: { postMessage(message) { messages.push(message); } } }
 };
 global.getComputedStyle = () => ({ getPropertyValue() { return ""; } });
 global.document = {
-  documentElement: documentRoot,
-  head: { appendChild() {} },
-  createElement() {
-    return {
-      style, dataset: {}, classList: classList(), append() {}, appendChild() {}
-    };
-  },
+  documentElement, head, body,
+  createElement(tagName) { return new Element(tagName); },
   querySelector(selector) {
-    if (!runtime) return null;
-    if (selector === '[data-card="projects"]') return project;
-    return null;
+    if (selector === "main.wrap") return wrap;
+    return documentElement.querySelector(selector);
   },
   querySelectorAll(selector) {
-    if (!runtime) return [];
-    return selector.includes("[data-card") ? cards : [];
+    if (selector === "main.wrap > [data-card]") {
+      return wrap.children.filter((child) => child.dataset.card !== undefined);
+    }
+    return documentElement.querySelectorAll(selector);
   },
-  addEventListener(type, callback) { (listeners[type] ||= []).push(callback); },
-  removeEventListener() {}
-};
-function dispatch(type, event) { for (const callback of listeners[type] || []) callback(event); }
-"""
-    event_flow = r"""
-runtime = true;
-const dragged = cards[0];
-const target = {
-  closest(selector) {
-    return selector.startsWith('[data-card=') ? dragged : null;
+  addEventListener(type, callback, options) {
+    const capture = options === true || Boolean(options && options.capture);
+    (listeners[type] ||= []).push({ callback, capture });
+  },
+  removeEventListener(type, callback, options) {
+    const capture = options === true || Boolean(options && options.capture);
+    listeners[type] = (listeners[type] || []).filter(
+      (entry) => entry.callback !== callback || entry.capture !== capture
+    );
   }
 };
-dispatch("pointerdown", { target, button: 0, pointerId: 7, clientY: 0 });
-dispatch("pointermove", { target, pointerId: 7, clientY: 20, preventDefault() {} });
-dispatch("pointerup", { target, pointerId: 7 });
-if (messages.length !== 1) throw new Error(`expected one reorder message, got ${messages.length}`);
-const payload = JSON.parse(messages[0]);
-if (payload.action !== "set_card_order") throw new Error("missing set_card_order action");
-if (payload.order.join(",") !== "claude,codex,agy,grok,openrouter") {
-  throw new Error(`wrong order: ${payload.order}`);
+function dispatch(type, target, init = {}) {
+  const event = {
+    type, target, button: 0, pointerId: 7, clientY: 0,
+    defaultPrevented: false, propagationStopped: false, immediateStopped: false,
+    preventDefault() { this.defaultPrevented = true; },
+    stopPropagation() { this.propagationStopped = true; },
+    stopImmediatePropagation() {
+      this.immediateStopped = true;
+      this.propagationStopped = true;
+    },
+    ...init
+  };
+  for (const capture of [true, false]) {
+    for (const entry of (listeners[type] || []).filter((item) => item.capture === capture)) {
+      entry.callback(event);
+      if (event.immediateStopped) return event;
+    }
+    if (event.propagationStopped) return event;
+  }
+  return event;
 }
 """
+    event_flow = r"""
+cards.forEach((card) => { card.hidden = false; });
+const dragTarget = new Element("div");
+cards[0].appendChild(dragTarget);
+dispatch("pointerdown", dragTarget, { clientY: 0 });
+dispatch("pointermove", dragTarget, { clientY: 25 });
+dispatch("pointerup", dragTarget, { clientY: 25 });
+const order = wrap.children.filter((item) => item.dataset.card !== "projects")
+  .map((item) => item.dataset.card);
+console.log(JSON.stringify({ messages, order }));
+"""
+    blocker = """
+document.addEventListener("pointerdown", (event) => {
+  if (event.target.closest("[data-card]")) event.stopImmediatePropagation();
+}, true);
+"""
 
-    result = subprocess.run(
-        [node, "-e", harness + core + event_flow],
-        check=False,
-        capture_output=True,
-        text=True,
-        timeout=10,
-    )
+    def run_event_flow(capture_blocker: str) -> dict[str, object]:
+        script = "\n".join(
+            (
+                harness,
+                f"eval({json.dumps(shim)});",
+                capture_blocker,
+                f"eval({json.dumps(core)});",
+                event_flow,
+            )
+        )
+        result = subprocess.run(
+            [node, "-e", script],
+            check=False,
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+        assert result.returncode == 0, result.stderr
+        return cast(dict[str, object], json.loads(result.stdout))
 
-    assert result.returncode == 0, result.stderr
+    actual = run_event_flow("")
+    assert actual["order"] == ["codex", "claude", "agy", "grok", "openrouter"]
+    messages = cast(list[str], actual["messages"])
+    assert len(messages) == 1
+    assert json.loads(messages[0]) == {
+        "action": "set_card_order",
+        "order": ["codex", "claude", "agy", "grok", "openrouter"],
+    }
+
+    blocked = run_event_flow(blocker)
+    assert blocked["order"] == ["claude", "codex", "agy", "grok", "openrouter"]
+    assert blocked["messages"] == []
 
 
 def test_content_height_message_resizes_visible_panel_with_natural_height(
