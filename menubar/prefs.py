@@ -87,9 +87,32 @@ def _save_quota_card_order(order: object) -> bool:
     if valid_order is None:
         return False
     prefs = _load_preferences()
-    prefs["quota_card_order"] = list(valid_order)
+    prefs["quota_card_order"] = list(
+        _merge_rendered_quota_card_order(prefs.get("quota_card_order"), valid_order)
+    )
     _save_preferences(prefs)
     return True
+
+
+def _merge_rendered_quota_card_order(
+    stored_value: object, rendered_order: tuple[str, ...]
+) -> tuple[str, ...]:
+    """Reorder rendered cards without deleting future card IDs from preferences."""
+    stored_order = _valid_quota_card_order(stored_value)
+    known_order = tuple(
+        card for card in rendered_order if card in DEFAULT_QUOTA_CARD_ORDER
+    )
+    if len(known_order) != len(rendered_order):
+        return rendered_order
+    if set(known_order) != set(DEFAULT_QUOTA_CARD_ORDER):
+        return rendered_order
+    if stored_order is None:
+        return known_order
+    remaining = iter(known_order)
+    return tuple(
+        next(remaining) if card in DEFAULT_QUOTA_CARD_ORDER else card
+        for card in stored_order
+    ) + tuple(remaining)
 
 
 def _valid_quota_card_order(value: object) -> tuple[str, ...] | None:

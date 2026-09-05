@@ -12,7 +12,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
-    from menubar.state import PopoverState, QuotaRowState
+    from menubar.state import OpenRouterState, PopoverState, ProviderSourceState, QuotaRowState
 
 CORE_SCRIPT_FILENAME = "panels/panel_core.js"
 
@@ -100,6 +100,47 @@ def _row_payload(row: QuotaRowState) -> dict[str, object]:
     }
 
 
+def _source_payload(source: ProviderSourceState | None) -> dict[str, object]:
+    if source is None:
+        return {
+            "source": None,
+            "sourceLabel": None,
+            "freshness": "unavailable",
+            "ageText": None,
+        }
+    return {
+        "source": source.source,
+        "sourceLabel": source.label,
+        "freshness": source.freshness,
+        "ageText": source.age_text,
+    }
+
+
+def _openrouter_payload(
+    quota: OpenRouterState | None, source: ProviderSourceState | None
+) -> dict[str, object]:
+    payload: dict[str, object] = {
+        "available": quota is not None,
+        "headline": quota.headline if quota is not None else "--",
+        "accountRemaining": quota.account_remaining if quota is not None else None,
+        "accountTotal": quota.account_total if quota is not None else None,
+        "accountUsed": quota.account_used if quota is not None else None,
+        "keyLimit": quota.key_limit if quota is not None else None,
+        "keyRemaining": quota.key_remaining if quota is not None else None,
+        "keyPercent": quota.key_percent if quota is not None else None,
+        "resetText": quota.reset_text if quota is not None else None,
+        "keyUnlimited": quota.key_unlimited if quota is not None else False,
+        "resetInterval": quota.reset_interval if quota is not None else None,
+        "resetAt": (
+            quota.reset_at.isoformat()
+            if quota is not None and quota.reset_at is not None
+            else None
+        ),
+    }
+    payload.update(_source_payload(source))
+    return payload
+
+
 def _state_payload(
     state: PopoverState, *, system_accent_color: str | None = None
 ) -> dict[str, object]:
@@ -127,27 +168,35 @@ def _state_payload(
                 for name, tokens, cost in rows
             ]
         )
+    sources = state.provider_sources
     payload: dict[str, object] = {
         "language": state.language,
         "claude": {
             "session": _row_payload(state.claude_session),
             "weekly": _row_payload(state.claude_weekly),
+            **_source_payload(sources.get("claude")),
         },
         "codex": {
             **codex_rows,
             "stale": state.codex_stale,
             "credits": state.codex_credits,
+            **_source_payload(sources.get("codex")),
         },
         "agy": {
             "session": _row_payload(state.agy_session),
             "weekly": _row_payload(state.agy_weekly),
             "groupName": state.agy_group_name,
             "stale": state.agy_stale,
+            **_source_payload(sources.get("antigravity")),
         },
         "grok": {
             "weekly": _row_payload(state.grok_weekly),
             "stale": state.grok_stale,
+            **_source_payload(sources.get("grok")),
         },
+        "openrouter": _openrouter_payload(
+            state.openrouter, sources.get("openrouter")
+        ),
         "projects": project_payloads[0],
         "projectsYesterday": project_payloads[1],
         "projects7d": project_payloads[2],
@@ -157,6 +206,7 @@ def _state_payload(
         "hideCodex": state.hide_codex,
         "hideAgy": state.hide_agy,
         "hideGrok": state.hide_grok,
+        "hideOpenRouter": state.hide_openrouter,
         "cardOrder": list(state.card_order),
         "historyError": state.history_error,
         "statusline": state.statusline,

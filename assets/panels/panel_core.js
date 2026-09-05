@@ -44,8 +44,10 @@
           host = document.querySelector('[data-card="agy"] .brand');
         } else if (state.hideClaude && state.hideCodex && state.hideAgy && !state.hideGrok) {
           host = document.querySelector('[data-card="grok"] .brand');
+        } else if (state.hideClaude && state.hideCodex && state.hideAgy && state.hideGrok && !state.hideOpenRouter) {
+          host = document.querySelector('[data-card="openrouter"] .brand, [data-card="openrouter"] .header');
         }
-        if (!host || (state.hideClaude && state.hideCodex && state.hideAgy && state.hideGrok)) {
+        if (!host || (state.hideClaude && state.hideCodex && state.hideAgy && state.hideGrok && state.hideOpenRouter)) {
           host = document.querySelector(".footer .actions");
           className = "action";
         }
@@ -87,7 +89,45 @@
         overflow: hidden;
         text-overflow: ellipsis;
       }
-      [data-card="grok"] { cursor: grab; }
+      [data-card="grok"],
+      [data-card="openrouter"] { cursor: grab; }
+      .hide-openrouter [data-card="openrouter"] { display: none !important; }
+      .usage-source-provenance {
+        display: inline-flex;
+        align-items: center;
+        gap: 5px;
+        margin-left: auto;
+        min-width: 0;
+        font-size: 10px;
+        line-height: 1.2;
+      }
+      .usage-source-badge,
+      .usage-source-marker {
+        display: inline-block;
+        max-width: 130px;
+        padding: 2px 6px;
+        border: 1px solid currentColor;
+        border-radius: 999px;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+      }
+      .usage-source-marker { color: var(--warn, #ffc439); }
+      .usage-source-marker[data-reauth="true"] { color: var(--danger, #ff453a); }
+      .usage-openrouter-headline {
+        margin: 8px 0;
+        color: var(--accent, currentColor);
+        font-size: 24px;
+        font-weight: 700;
+      }
+      .usage-openrouter-details { display: grid; gap: 4px; }
+      .usage-openrouter-detail {
+        display: flex;
+        justify-content: space-between;
+        gap: 12px;
+        font-size: 12px;
+      }
+      .usage-openrouter-detail > :first-child { color: var(--muted, currentColor); }
     `;
     document.head.appendChild(switchHostStyle);
     let currentLanguage = "en";
@@ -172,14 +212,21 @@
       const color = colorFor(data.percent, accent);
       el.dataset.available = available ? "true" : "false";
       if (el.dataset.rowReady !== "true") {
-        el.innerHTML = `
-          <div class="row-head">
-            <div class="row-title"></div>
-            <div class="percent"></div>
-          </div>
-          <div class="track"><div class="fill"></div></div>
-          <div class="reset"></div>
-        `;
+        const head = document.createElement("div");
+        head.className = "row-head";
+        const rowTitle = document.createElement("div");
+        rowTitle.className = "row-title";
+        const rowPercent = document.createElement("div");
+        rowPercent.className = "percent";
+        head.append(rowTitle, rowPercent);
+        const track = document.createElement("div");
+        track.className = "track";
+        const rowFill = document.createElement("div");
+        rowFill.className = "fill";
+        track.append(rowFill);
+        const rowReset = document.createElement("div");
+        rowReset.className = "reset";
+        el.replaceChildren(head, track, rowReset);
         el.dataset.rowReady = "true";
       }
       const title = el.querySelector(".row-title");
@@ -210,6 +257,89 @@
       const critical = isCriticalRow(rows && rows.session)
         || isCriticalRow(rows && rows.weekly);
       cardEl.dataset.critical = critical ? "true" : "false";
+    }
+
+    function renderSourceProvenance(cardName, cardState) {
+      const card = document.querySelector(`[data-card="${cardName}"]`);
+      if (!card) return;
+      const header = card.querySelector("header, .header, .brand") || card.firstElementChild;
+      if (!header) return;
+      let provenance = card.querySelector("[data-source-provenance]");
+      if (!provenance) {
+        provenance = document.createElement("span");
+        provenance.className = "usage-source-provenance";
+        provenance.dataset.sourceProvenance = "";
+        const badge = document.createElement("span");
+        badge.className = "usage-source-badge";
+        badge.dataset.sourceBadge = "";
+        const marker = document.createElement("span");
+        marker.className = "usage-source-marker";
+        marker.dataset.sourceMarker = "";
+        provenance.append(badge, marker);
+        header.append(provenance);
+      }
+      const data = cardState || {};
+      const freshness = typeof data.freshness === "string" ? data.freshness : "unavailable";
+      const badge = provenance.querySelector("[data-source-badge]");
+      const marker = provenance.querySelector("[data-source-marker]");
+      card.dataset.freshness = freshness;
+      if (badge) badge.textContent = data.sourceLabel || "--";
+      if (!marker) return;
+      const age = data.ageText ? ` · ${data.ageText}` : "";
+      if (freshness === "reauth_required") {
+        marker.textContent = `${t("quota_reauth_required")}${age}`;
+        marker.dataset.reauth = "true";
+        marker.hidden = false;
+      } else if (freshness === "stale") {
+        marker.textContent = `${t("quota_stale")}${age}`;
+        marker.dataset.reauth = "false";
+        marker.hidden = false;
+      } else {
+        marker.textContent = "";
+        marker.dataset.reauth = "false";
+        marker.hidden = true;
+      }
+    }
+
+    function setOpenRouterDetail(attribute, value) {
+      const valueEl = document.querySelector(`[${attribute}]`);
+      if (!valueEl) return;
+      const row = valueEl.closest("[data-openrouter-detail]");
+      const present = value !== null && value !== undefined && value !== "";
+      if (row) row.hidden = !present;
+      valueEl.textContent = present ? `${value}` : "--";
+    }
+
+    function renderOpenRouter(openrouter) {
+      const data = openrouter || {};
+      const card = document.querySelector('[data-card="openrouter"]');
+      if (card) card.hidden = data.available !== true;
+      const headline = document.querySelector("[data-openrouter-headline]");
+      if (headline) {
+        headline.textContent = data.headline === "unlimited"
+          ? t("openrouter_unlimited")
+          : data.headline && data.headline !== "unavailable" ? data.headline : "--";
+      }
+      setOpenRouterDetail("data-openrouter-account-remaining", data.accountRemaining);
+      setOpenRouterDetail("data-openrouter-account-total", data.accountTotal);
+      setOpenRouterDetail("data-openrouter-account-used", data.accountUsed);
+      setOpenRouterDetail(
+        "data-openrouter-key-limit",
+        data.keyUnlimited === true ? t("openrouter_unlimited") : data.keyLimit
+      );
+      setOpenRouterDetail(
+        "data-openrouter-key-remaining",
+        data.keyUnlimited === true ? null : data.keyRemaining
+      );
+      setOpenRouterDetail(
+        "data-openrouter-key-percent",
+        typeof data.keyPercent === "number" ? `${data.keyPercent}%` : null
+      );
+      setOpenRouterDetail(
+        "data-openrouter-reset-interval",
+        data.resetInterval ? t(`openrouter_reset_interval_${data.resetInterval}`) : null
+      );
+      setOpenRouterDetail("data-openrouter-reset-at", data.resetText || data.resetAt);
     }
 
     function renderCodexStale(stale) {
@@ -345,27 +475,43 @@
       document.querySelectorAll(".usage-switch-host").forEach((host) => {
         host.classList.remove("usage-switch-host");
       });
-      window.PanelHooks.switchButtonStrategy(state);
+      const openRouterUnavailable = !state.openrouter || state.openrouter.available !== true;
+      const switchState = {
+        ...state,
+        hideOpenRouter: state.hideOpenRouter || openRouterUnavailable,
+      };
+      window.PanelHooks.switchButtonStrategy(switchState);
       const button = document.querySelector('[data-action="switch"]');
+      if (button && state.hideClaude && state.hideCodex && state.hideAgy && state.hideGrok && !switchState.hideOpenRouter) {
+        const openRouterHost = document.querySelector(
+          '[data-card="openrouter"] .brand, [data-card="openrouter"] .header'
+        );
+        if (openRouterHost) {
+          button.className = "switch";
+          openRouterHost.appendChild(button);
+        }
+      }
       const host = button && button.parentElement;
       if (host && host.closest('[data-card="codex"]')) {
         host.classList.add("usage-switch-host");
       }
     }
 
-    const QUOTA_CARD_IDS = ["claude", "codex", "agy", "grok"];
+    const QUOTA_CARD_IDS = ["claude", "codex", "agy", "grok", "openrouter"];
 
     function applyCardOrder(order) {
       if (cardDrag && cardDrag.dragging) return;
-      if (!Array.isArray(order) || order.length !== QUOTA_CARD_IDS.length || new Set(order).size !== QUOTA_CARD_IDS.length || !order.every((id) => QUOTA_CARD_IDS.includes(id))) return;
+      if (!Array.isArray(order) || order.some((id) => typeof id !== "string" || !id) || new Set(order).size !== order.length) return;
+      const knownOrder = order.filter((id) => QUOTA_CARD_IDS.includes(id));
+      if (knownOrder.length !== QUOTA_CARD_IDS.length || !QUOTA_CARD_IDS.every((id) => knownOrder.includes(id))) return;
       const wrap = document.querySelector("main.wrap");
       const projects = document.querySelector('[data-card="projects"]');
       if (!wrap || !projects) return;
       const currentOrder = [...wrap.querySelectorAll(':scope > [data-card]')]
         .filter((card) => QUOTA_CARD_IDS.includes(card.dataset.card))
         .map((card) => card.dataset.card);
-      if (order.every((id, index) => currentOrder[index] === id)) return;
-      order.forEach((id) => {
+      if (knownOrder.every((id, index) => currentOrder[index] === id)) return;
+      knownOrder.forEach((id) => {
         const card = document.querySelector(`[data-card="${id}"]`);
         if (card) wrap.insertBefore(card, projects);
       });
@@ -381,6 +527,7 @@
       document.documentElement.classList.toggle('hide-claude', !!state.hideClaude);
       document.documentElement.classList.toggle('hide-agy', !!state.hideAgy);
       document.documentElement.classList.toggle('hide-grok', !!state.hideGrok);
+      document.documentElement.classList.toggle('hide-openrouter', !!state.hideOpenRouter);
       applyCardOrder(state.cardOrder);
       relocateSwitchButton(state);
       currentLanguage = I18N[state.language] ? state.language : currentLanguage;
@@ -391,6 +538,12 @@
       renderCodexCredits(state.codex && state.codex.credits);
       renderAgy(state.agy);
       renderGrok(state.grok);
+      renderOpenRouter(state.openrouter);
+      renderSourceProvenance("claude", state.claude);
+      renderSourceProvenance("codex", state.codex);
+      renderSourceProvenance("agy", state.agy);
+      renderSourceProvenance("grok", state.grok);
+      renderSourceProvenance("openrouter", state.openrouter);
       renderHistoryLoadError(state.historyError);
       latestState = state;
       renderProjects(
@@ -453,7 +606,7 @@
     let cardDrag = null;
 
     document.addEventListener("pointerdown", (event) => {
-      const card = event.target.closest('[data-card="claude"], [data-card="codex"], [data-card="agy"], [data-card="grok"]');
+      const card = event.target.closest('[data-card="claude"], [data-card="codex"], [data-card="agy"], [data-card="grok"], [data-card="openrouter"]');
       if (!card || event.button !== 0 || event.target.closest(window.PanelHooks.pointerdownExcludeSelector)) return;
       cardDrag = { card, pointerId: event.pointerId, startY: event.clientY, dragging: false };
       card.setPointerCapture(event.pointerId);
@@ -468,7 +621,7 @@
         document.documentElement.classList.add("is-card-dragging");
       }
       event.preventDefault();
-      const cards = [...document.querySelectorAll('[data-card="claude"], [data-card="codex"], [data-card="agy"], [data-card="grok"]')]
+      const cards = [...document.querySelectorAll('[data-card="claude"], [data-card="codex"], [data-card="agy"], [data-card="grok"], [data-card="openrouter"]')]
         .filter((card) => card.offsetParent !== null);
       const target = cards.find((card) => card !== cardDrag.card && event.clientY < card.getBoundingClientRect().top + card.getBoundingClientRect().height / 2);
       if (target) target.parentElement.insertBefore(cardDrag.card, target);
@@ -504,9 +657,11 @@
       codex: { session: {}, weekly: {} },
       agy: { session: {}, weekly: {}, groupName: "" },
       grok: { weekly: {} },
-      cardOrder: ["claude", "codex", "agy", "grok"],
+      openrouter: {},
+      cardOrder: ["claude", "codex", "agy", "grok", "openrouter"],
       hideAgy: true,
       hideGrok: true,
+      hideOpenRouter: false,
       projects: [],
       projectsYesterday: [],
       projects7d: [],

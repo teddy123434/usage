@@ -330,7 +330,7 @@ def test_native_drag_region_covers_every_quota_card() -> None:
     html = wintray.panel_html("classic.html")
     shim = html.split("Panel assets register their card reorder handler")[1]
 
-    for card in ("claude", "codex", "agy", "grok"):
+    for card in ("claude", "codex", "agy", "grok", "openrouter"):
         assert f'[data-card="{card}"]' in shim
 
 
@@ -973,7 +973,7 @@ def test_card_order_persists_into_the_next_loaded_panel(
     controller = wintray._WindowsTrayController(mock=True, interval=60)
     controller.window = window
     controller.visible = True
-    order = ["codex", "claude", "agy"]
+    order = ["codex", "claude", "openrouter", "grok", "agy"]
 
     monkeypatch.setattr(wintray, "_load_preferences", lambda: preferences.copy())
     monkeypatch.setattr(menubar_prefs, "_load_preferences", lambda: preferences.copy())
@@ -991,10 +991,53 @@ def test_card_order_persists_into_the_next_loaded_panel(
     controller.on_loaded()
 
     assert preferences["quota_card_order"] == order
-    assert controller.latest_state.card_order == (*order, "grok", "openrouter")
+    assert controller.latest_state.card_order == tuple(order)
     assert len(loaded) == 1
     payload = injected[-1].removeprefix("window.usageApplyState(").removesuffix(")")
-    assert json.loads(payload)["cardOrder"] == [*order, "grok", "openrouter"]
+    assert json.loads(payload)["cardOrder"] == order
+
+
+def test_windows_drag_order_accepts_five_cards_and_preserves_future_ids(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    preferences: dict[str, object] = {
+        "quota_card_order": [
+            "future-a",
+            "claude",
+            "codex",
+            "agy",
+            "grok",
+            "openrouter",
+            "future-b",
+        ]
+    }
+    controller = wintray._WindowsTrayController(mock=True, interval=60)
+
+    monkeypatch.setattr(wintray, "_load_preferences", lambda: preferences.copy())
+    monkeypatch.setattr(
+        wintray,
+        "_save_preferences",
+        lambda updated: preferences.update(updated),
+    )
+
+    controller.handle_panel_message(
+        json.dumps(
+            {
+                "action": "set_card_order",
+                "order": ["openrouter", "grok", "agy", "codex", "claude"],
+            }
+        )
+    )
+
+    assert preferences["quota_card_order"] == [
+        "future-a",
+        "openrouter",
+        "grok",
+        "agy",
+        "codex",
+        "claude",
+        "future-b",
+    ]
 
 
 def test_run_app_wires_pystray_and_pywebview(

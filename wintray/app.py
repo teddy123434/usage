@@ -38,12 +38,14 @@ from menubar import grok as menubar_grok
 from menubar import refresh as menubar_refresh
 from menubar import state as menubar_state
 from menubar.prefs import (
+    DEFAULT_QUOTA_CARD_ORDER,
     _auto_update_check_enabled,
     _hide_agy_enabled,
     _hide_claude_enabled,
     _hide_codex_enabled,
     _hide_grok_enabled,
     _hide_openrouter_enabled,
+    _merge_rendered_quota_card_order,
     _panel_flavor,
     _prefer_ocx_enabled,
     _quota_card_order,
@@ -275,7 +277,7 @@ document.addEventListener('pointerdown', function(event) {
   var target = event.target;
   var card = target && target.closest && target.closest(
     '[data-card="claude"], [data-card="codex"], [data-card="agy"], '
-    + '[data-card="grok"]'
+    + '[data-card="grok"], [data-card="openrouter"]'
   );
   var interactive = target && target.closest && target.closest(
     'button, a, input, select, textarea, label, summary, [contenteditable], '
@@ -1876,11 +1878,15 @@ class _WindowsTrayController:
                 if (
                     isinstance(order, list)
                     and all(isinstance(item, str) for item in order)
-                    and len(order) == 3
-                    and set(order) == {"agy", "claude", "codex"}
+                    and len(order) == len(DEFAULT_QUOTA_CARD_ORDER)
+                    and set(order) == set(DEFAULT_QUOTA_CARD_ORDER)
                 ):
                     preferences = _load_preferences()
-                    preferences["quota_card_order"] = order
+                    preferences["quota_card_order"] = list(
+                        _merge_rendered_quota_card_order(
+                            preferences.get("quota_card_order"), tuple(order)
+                        )
+                    )
                     _save_preferences(preferences)
             elif action == "set_panel_flavor":
                 _save_panel_flavor(payload.get("flavor"))

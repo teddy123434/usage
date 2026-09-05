@@ -596,6 +596,14 @@
     .hide-claude .duel-fill.left,
     .hide-claude .duel-pct.left,
     .hide-claude [id^="claude-"] { display: none; }
+    .hide-openrouter [data-card="openrouter"] { display: none; }
+    [data-card="openrouter"] { padding: 10px 14px; }
+    .usage-openrouter-header,
+    .usage-openrouter-detail { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
+    .usage-openrouter-header { font-weight: 900; }
+    .usage-openrouter-headline { color: var(--gold); font-size: 20px; }
+    .usage-openrouter-details { display: grid; grid-template-columns: 1fr 1fr; gap: 4px 14px; margin-top: 8px; font-size: 11px; }
+    .usage-openrouter-detail > :first-child { color: var(--muted); }
   </style>
 </head>
 <body>
@@ -661,6 +669,21 @@
             <div id="claude-weekly-reset">--</div>
             <div id="codex-weekly-reset">--</div>
           </div>
+        </div>
+      </section>
+
+      <section class="scoreboard card" data-card="openrouter">
+        <header class="usage-openrouter-header"><span data-i18n="openrouter_name">OpenRouter</span><span data-source-badge>--</span><span data-source-marker hidden></span><button class="range-chip" data-action="refresh" data-i18n="refresh_now">Refresh</button></header>
+        <div class="usage-openrouter-headline" data-openrouter-headline>--</div>
+        <div class="usage-openrouter-details">
+          <div class="usage-openrouter-detail" data-openrouter-detail><span data-i18n="openrouter_account_remaining">Account remaining</span><span data-openrouter-account-remaining>--</span></div>
+          <div class="usage-openrouter-detail" data-openrouter-detail><span data-i18n="openrouter_account_total">Credits purchased</span><span data-openrouter-account-total>--</span></div>
+          <div class="usage-openrouter-detail" data-openrouter-detail><span data-i18n="openrouter_account_used">Account usage</span><span data-openrouter-account-used>--</span></div>
+          <div class="usage-openrouter-detail" data-openrouter-detail><span data-i18n="openrouter_key_limit">Key limit</span><span data-openrouter-key-limit>--</span></div>
+          <div class="usage-openrouter-detail" data-openrouter-detail><span data-i18n="openrouter_key_remaining">Key remaining</span><span data-openrouter-key-remaining>--</span></div>
+          <div class="usage-openrouter-detail" data-openrouter-detail><span data-i18n="openrouter_key_used">Key used</span><span data-openrouter-key-percent>--</span></div>
+          <div class="usage-openrouter-detail" data-openrouter-detail><span data-i18n="openrouter_reset_interval">Reset interval</span><span data-openrouter-reset-interval>--</span></div>
+          <div class="usage-openrouter-detail" data-openrouter-detail><span data-i18n="openrouter_reset_at">Reset time</span><span data-openrouter-reset-at>--</span></div>
         </div>
       </section>
 
@@ -955,9 +978,55 @@
       }
     }
 
+    function renderOpenRouter(openrouter) {
+      const data = openrouter || {};
+      const card = document.querySelector('[data-card="openrouter"]');
+      if (card) {
+        card.hidden = data.available !== true;
+        card.dataset.freshness = data.freshness || "unavailable";
+      }
+      const headline = document.querySelector("[data-openrouter-headline]");
+      const source = document.querySelector('[data-card="openrouter"] [data-source-badge]');
+      const marker = document.querySelector('[data-card="openrouter"] [data-source-marker]');
+      if (headline) headline.textContent = data.headline === "unlimited" ? t("openrouter_unlimited") : data.headline && data.headline !== "unavailable" ? data.headline : "--";
+      if (source) source.textContent = data.sourceLabel || "--";
+      if (marker) {
+        const age = data.ageText ? ` · ${data.ageText}` : "";
+        if (data.freshness === "reauth_required") {
+          marker.textContent = `${t("quota_reauth_required")}${age}`;
+          marker.hidden = false;
+        } else if (data.freshness === "stale") {
+          marker.textContent = `${t("quota_stale")}${age}`;
+          marker.hidden = false;
+        } else {
+          marker.textContent = "";
+          marker.hidden = true;
+        }
+      }
+      const values = {
+        "data-openrouter-account-remaining": data.accountRemaining,
+        "data-openrouter-account-total": data.accountTotal,
+        "data-openrouter-account-used": data.accountUsed,
+        "data-openrouter-key-limit": data.keyUnlimited === true ? t("openrouter_unlimited") : data.keyLimit,
+        "data-openrouter-key-remaining": data.keyUnlimited === true ? null : data.keyRemaining,
+        "data-openrouter-key-percent": typeof data.keyPercent === "number" ? `${data.keyPercent}%` : null,
+        "data-openrouter-reset-interval": data.resetInterval ? t(`openrouter_reset_interval_${data.resetInterval}`) : null,
+        "data-openrouter-reset-at": data.resetText || data.resetAt,
+      };
+      Object.entries(values).forEach(([attribute, value]) => {
+        const node = document.querySelector(`[${attribute}]`);
+        if (!node) return;
+        const row = node.closest("[data-openrouter-detail]");
+        const present = value !== null && value !== undefined && value !== "";
+        if (row) row.hidden = !present;
+        node.textContent = present ? `${value}` : "--";
+      });
+    }
+
     window.usageApplyState = function usageApplyState(state) {
       document.documentElement.classList.toggle('hide-codex', !!state.hideCodex);
       document.documentElement.classList.toggle('hide-claude', !!state.hideClaude);
+      document.documentElement.classList.toggle('hide-openrouter', !!state.hideOpenRouter);
       currentLanguage = I18N[state.language] ? state.language : currentLanguage;
       applyStaticText();
 
@@ -1006,6 +1075,7 @@
         : state.projects
       );
       renderStatusline(state.statusline || {});
+      renderOpenRouter(state.openrouter);
       applyFooter(state.footer || {});
     };
 

@@ -7,6 +7,7 @@
 from __future__ import annotations
 
 import json
+import re
 from pathlib import Path
 from typing import Any, cast
 
@@ -38,6 +39,7 @@ CARD_PANEL_FILENAMES = (
     "stained_glass.html",
     "win95.html",
 )
+NON_TALENT_PANEL_FILENAMES = (*CARD_PANEL_FILENAMES, "world_cup.html")
 
 
 class FakeDefaults:
@@ -226,6 +228,72 @@ def test_card_panels_expose_grok_dom_contract(filename: str) -> None:
     assert "data-grok-stale" in html
     assert "data-grok-stale-age" in html
     assert "data-grok-stale-tooltip" in html
+
+
+@pytest.mark.parametrize("filename", NON_TALENT_PANEL_FILENAMES)
+def test_card_panels_expose_one_openrouter_dom_contract(filename: str) -> None:
+    panel_path = Path(__file__).resolve().parent.parent / "assets" / "panels" / filename
+    html = panel_path.read_text(encoding="utf-8")
+
+    elements = re.findall(r'<[^/!][^>]*\bdata-card="openrouter"[^>]*>', html)
+    assert len(elements) == 1, filename
+    card_markup = re.search(
+        r'<[^/!][^>]*\bdata-card="openrouter"[^>]*>.*?</section>',
+        html,
+        re.DOTALL,
+    )
+    assert card_markup is not None, filename
+    assert 'data-action="refresh"' in card_markup.group(), filename
+    for attribute in (
+        "data-openrouter-headline",
+        "data-openrouter-account-remaining",
+        "data-openrouter-account-total",
+        "data-openrouter-account-used",
+        "data-openrouter-key-limit",
+        "data-openrouter-key-remaining",
+        "data-openrouter-key-percent",
+        "data-openrouter-reset-interval",
+        "data-openrouter-reset-at",
+    ):
+        elements = re.findall(rf'<[^/!][^>]*\b{attribute}(?:[=>\s])[^>]*>', html)
+        assert len(elements) == 1, (filename, attribute)
+
+
+
+def test_talent_market_stays_outside_quota_card_contract() -> None:
+    panel_path = (
+        Path(__file__).resolve().parent.parent / "assets" / "panels" / "talent_market.html"
+    )
+
+    assert 'data-card="openrouter"' not in panel_path.read_text(encoding="utf-8")
+
+
+def test_shared_core_renders_sources_reauth_and_openrouter_with_text_only_dom() -> None:
+    core_path = Path(__file__).resolve().parent.parent / "assets" / "panels" / "panel_core.js"
+    core_script = core_path.read_text(encoding="utf-8")
+
+    assert "function renderSourceProvenance(cardName, cardState)" in core_script
+    assert 'dataset.freshness = freshness' in core_script
+    assert 'freshness === "reauth_required"' in core_script
+    assert "function renderOpenRouter(openrouter)" in core_script
+    assert 'document.createElement("span")' in core_script
+    assert ".textContent =" in core_script
+    assert "row.hidden = !present" in core_script
+    assert 'valueEl.textContent = present ? `${value}` : "--"' in core_script
+    assert ".innerHTML" not in core_script
+    assert 'const QUOTA_CARD_IDS = ["claude", "codex", "agy", "grok", "openrouter"]' in core_script
+    assert "const knownOrder = order.filter" in core_script
+    assert "state.hideOpenRouter" in core_script
+
+
+def test_theme_html_does_not_implement_scrolling_or_zoom() -> None:
+    panel_dir = Path(__file__).resolve().parent.parent / "assets" / "panels"
+
+    for filename in NON_TALENT_PANEL_FILENAMES:
+        html = (panel_dir / filename).read_text(encoding="utf-8").lower()
+        assert "overflow-y" not in html, filename
+        assert "scrollbar" not in html, filename
+        assert "zoom:" not in html, filename
 
 
 def test_state_payload_omits_codex_rows_with_empty_titles(
