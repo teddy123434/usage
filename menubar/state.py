@@ -28,6 +28,7 @@ from loaders.ocx_quota import (
     NormalizedQuotaSnapshot,
     NormalizedQuotaWindow,
     QuotaSource,
+    ResetInterval,
 )
 from menubar.prefs import _hide_claude_enabled, _hide_codex_enabled, _quota_card_order
 from pricing import calculate_cost
@@ -99,6 +100,7 @@ class QuotaRowState:
     color: tuple[float, float, float]
     warning: bool = False
     available: bool = True
+    updated_at: datetime | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -107,6 +109,7 @@ class ProviderSourceState:
     label: str
     freshness: Freshness
     age_text: str | None
+    updated_at: datetime | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -120,6 +123,8 @@ class OpenRouterState:
     key_percent: float | None
     reset_text: str | None
     key_unlimited: bool
+    reset_interval: ResetInterval | None = None
+    reset_at: datetime | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -667,6 +672,7 @@ def provider_source_state(
         label=snapshot.source_label,
         freshness=snapshot.freshness,
         age_text=age_text,
+        updated_at=snapshot.updated_at,
     )
 
 
@@ -687,6 +693,7 @@ def native_quota_snapshot(
     )
     if not windows:
         return None
+    row_updates = tuple(row.updated_at for row in rows if row.updated_at is not None)
     return NormalizedQuotaSnapshot(
         provider=cast(LogicalProvider, provider),
         source="native",
@@ -694,7 +701,7 @@ def native_quota_snapshot(
         windows=windows,
         account_credits_usd=None,
         key_budget_usd=None,
-        updated_at=updated_at or datetime.now(UTC),
+        updated_at=updated_at or (max(row_updates) if row_updates else datetime.now(UTC)),
         freshness="stale" if stale else "fresh",
         provenance=None,
         details={},
@@ -970,6 +977,10 @@ def codex_rows(
 
     now = time.time()
     try:
+        rate_limits_updated_at = parse_iso8601_utc_or_raise(rate_limits.updated_at)
+    except (TypeError, ValueError):
+        rate_limits_updated_at = None
+    try:
         codex_stale = codex_stale_state(
             rate_limits.updated_at,
             now,
@@ -1017,6 +1028,7 @@ def codex_rows(
             CODEX_COLOR,
             language,
             forecast_seconds=burn_rate_trackers["codex_session"].forecast_seconds(),
+            updated_at=rate_limits_updated_at,
         ),
         _quota_row(
             weekly_title,
@@ -1030,6 +1042,7 @@ def codex_rows(
                 min_span_seconds=WEEKLY_FORECAST_MIN_SPAN_SECONDS,
             ),
             warning_max_seconds=24 * 3600,
+            updated_at=rate_limits_updated_at,
         ),
     )
     credits: CodexCreditsState | None = (
@@ -1084,6 +1097,7 @@ def build_popover_state(
 
     if outcome.state == PollState.SUCCESS and outcome.snapshot is not None:
         snapshot = outcome.snapshot
+        snapshot_updated_at = datetime.fromtimestamp(snapshot.polled_at, UTC)
         if snapshot.current_percent is not None:
             burn_rate_trackers["claude_session"].record(
                 snapshot.polled_at,
@@ -1102,6 +1116,7 @@ def build_popover_state(
             CLAUDE_COLOR,
             language,
             forecast_seconds=burn_rate_trackers["claude_session"].forecast_seconds(),
+            updated_at=snapshot_updated_at,
         )
         claude_weekly = _quota_row(
             _t(language, "weekly_label"),
@@ -1115,6 +1130,7 @@ def build_popover_state(
                 min_span_seconds=WEEKLY_FORECAST_MIN_SPAN_SECONDS,
             ),
             warning_max_seconds=24 * 3600,
+            updated_at=snapshot_updated_at,
         )
         status_value = _status_message_value(outcome, "status_synced", language)
         if snapshot.is_stale or snapshot.data_source != "hook":
@@ -1206,6 +1222,7 @@ def _quota_row(
     language: str = "en",
     forecast_seconds: float | None = None,
     warning_max_seconds: float | None = None,
+    updated_at: datetime | None = None,
 ) -> QuotaRowState:
     if pct is None or resets_at is None:
         return _missing_row(title, color, language)
@@ -1245,6 +1262,7 @@ def _quota_row(
         color=_bar_color(pct, color),
         warning=warning,
         available=True,
+        updated_at=updated_at,
     )
 
 

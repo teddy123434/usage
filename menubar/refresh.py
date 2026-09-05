@@ -42,7 +42,7 @@ from menubar.prefs import (
     _quota_source_mode,
     _save_quota_last_source,
 )
-from menubar.quota_sources import proven_ocx_route, select_quota_source
+from menubar.quota_sources import load_route_facts, proven_ocx_route, select_quota_source
 from quota.burn_rate import BurnRateTracker
 from quota.usage_rate import UsageRateTracker
 from service_status import CLAUDE_STATUS, CODEX_STATUS, get_service_status
@@ -89,6 +89,7 @@ class RefreshSources:
     grok_projection: menubar_grok.GrokQuotaProjection
     debug_timing: bool
     ocx_snapshot: OcxQuotaSnapshot | None = None
+    route_facts: dict[str, dict[str, object]] | None = None
 
     def measure(self, stage: str, started_at: float) -> None:
         if self.debug_timing:
@@ -116,6 +117,10 @@ def load_sources(app: _RefreshApp) -> RefreshSources:
         elapsed_ms = (time.monotonic() - started_at) * 1000
         logger.debug("refresh_timing stage=%s elapsed_ms=%.1f", "grok_load", elapsed_ms)
     grok_projection = grok_result.projection or menubar_grok.fallback_projection(app.language)
+    try:
+        route_facts = load_route_facts()
+    except Exception:
+        route_facts = {}
     started_at = time.monotonic() if debug_timing else 0.0
     try:
         ocx_snapshot = load_ocx_quota()
@@ -137,6 +142,7 @@ def load_sources(app: _RefreshApp) -> RefreshSources:
         grok_result=grok_result,
         grok_projection=grok_projection,
         ocx_snapshot=ocx_snapshot,
+        route_facts=route_facts,
         debug_timing=debug_timing,
     )
 
@@ -326,6 +332,7 @@ def _project_selected_quota_sources(
     outcome: PollOutcome | None,
 ) -> None:
     """Select and project providers independently from one immutable OCX read."""
+    now = time.time()
     previous = getattr(app, "latest_state", menubar_state._empty_state(app.language))
     state.provider_sources = dict(previous.provider_sources)
     ocx_providers = sources.ocx_snapshot.providers if sources.ocx_snapshot is not None else {}
@@ -347,16 +354,21 @@ def _project_selected_quota_sources(
                 mode=mode,
                 native=native[provider],
                 ocx=ocx,
-                proven_ocx_route=_route_is_ocx(app, provider),
+                proven_ocx_route=_route_is_ocx(sources, provider),
                 last_selected=last,
             )
             if selected.selected is None:
+                previous_metadata = previous.provider_sources.get(provider)
+                intended_source = selected.source
+                if mode == "auto" and intended_source is None and previous_metadata is not None:
+                    intended_source = previous_metadata.source
                 _preserve_or_clear_provider(
                     state,
                     previous,
                     provider,
-                    selected.source,
-                    preserve_previous=ocx is None or selected.source != "ocx",
+                    intended_source,
+                    preserve_previous=True,
+                    now=now,
                 )
                 continue
             if selected.source == "ocx":
@@ -366,7 +378,7 @@ def _project_selected_quota_sources(
                 _apply_ocx_projection(state, provider, projection)
             else:
                 state.provider_sources[provider] = menubar_state.provider_source_state(
-                    selected.selected, app.language
+                    selected.selected, app.language, now=now
                 )
             if selected.source is not None and selected.source != last:
                 try:
@@ -381,7 +393,7 @@ def _project_selected_quota_sources(
         except Exception:
             if os.environ.get("USAGE_DEBUG") == "1":
                 logger.warning("quota source projection failed: %s", provider, exc_info=True)
-            _preserve_or_clear_provider(state, previous, provider, last)
+            _preserve_or_clear_provider(state, previous, provider, last, now=now)
 
     try:
         state.openrouter = menubar_openrouter.project_quota(
@@ -390,25 +402,41 @@ def _project_selected_quota_sources(
         openrouter_snapshot = ocx_providers.get("openrouter")
         if state.openrouter is not None and openrouter_snapshot is not None:
             state.provider_sources["openrouter"] = menubar_state.provider_source_state(
-                openrouter_snapshot, app.language
+                openrouter_snapshot, app.language, now=now
+            )
+        elif (
+            openrouter_snapshot is not None
+            and openrouter_snapshot.freshness == "reauth_required"
+        ):
+            state.openrouter = previous.openrouter or menubar_openrouter.unavailable_state()
+            state.provider_sources["openrouter"] = menubar_state.provider_source_state(
+                openrouter_snapshot, app.language, now=now
             )
         elif openrouter_snapshot is None and previous.openrouter is not None:
             state.openrouter = previous.openrouter
-            _mark_previous_source_stale(state, previous, "openrouter")
+            _mark_previous_source_stale(state, previous, "openrouter", now=now)
         else:
             state.provider_sources.pop("openrouter", None)
     except Exception:
         state.openrouter = previous.openrouter
 
 
-def _route_is_ocx(app: _RefreshApp, provider: str) -> bool:
-    facts_by_provider = getattr(app, "quota_route_facts", {})
-    facts = facts_by_provider.get(provider) if isinstance(facts_by_provider, dict) else None
+def _route_is_ocx(sources: RefreshSources, provider: str) -> bool:
+    facts_by_provider = sources.route_facts or {}
+    facts = facts_by_provider.get(provider)
     return proven_ocx_route(
         provider,
-        route=facts if isinstance(facts, dict) else None,
-        env=os.environ if provider == "claude" else None,
+        route=facts,
+        env=_route_env(facts) if provider == "claude" else None,
     )
+
+
+def _route_env(facts: dict[str, object] | None) -> dict[str, str] | None:
+    if facts is None or not all(
+        isinstance(key, str) and isinstance(value, str) for key, value in facts.items()
+    ):
+        return None
+    return {key: value for key, value in facts.items() if isinstance(value, str)}
 
 
 def _provider_color(provider: str) -> tuple[float, float, float]:
@@ -427,6 +455,7 @@ def _apply_ocx_projection(
 ) -> None:
     state.provider_sources = state.provider_sources or {}
     state.provider_sources[provider] = projection.source
+    _apply_legacy_ocx_stale(state, provider, projection.source)
     rows = projection.rows
     if provider == "claude":
         state.claude_session, state.claude_weekly = _two_rows(
@@ -470,11 +499,17 @@ def _preserve_or_clear_provider(
     intended_source: str | None,
     *,
     preserve_previous: bool = True,
+    now: float | None = None,
 ) -> None:
     previous_sources = previous.provider_sources
     metadata = previous_sources.get(provider)
-    if preserve_previous and metadata is not None and metadata.source == intended_source:
-        _mark_previous_source_stale(state, previous, provider)
+    if (
+        preserve_previous
+        and metadata is not None
+        and metadata.source == intended_source
+        and _source_is_within_stale_window(metadata, now)
+    ):
+        _mark_previous_source_stale(state, previous, provider, now=now)
         if provider == "claude":
             state.claude_session, state.claude_weekly = (
                 previous.claude_session,
@@ -492,6 +527,9 @@ def _preserve_or_clear_provider(
         elif provider == "grok":
             state.grok_weekly = previous.grok_weekly
             state.hide_grok = previous.hide_grok
+        retained = state.provider_sources.get(provider)
+        if retained is not None:
+            _apply_legacy_ocx_stale(state, provider, retained)
         return
     state.provider_sources.pop(provider, None)
     if intended_source == "ocx":
@@ -512,15 +550,54 @@ def _mark_previous_source_stale(
     state: menubar_state.PopoverState,
     previous: menubar_state.PopoverState,
     provider: str,
+    *,
+    now: float | None = None,
 ) -> None:
     metadata = previous.provider_sources.get(provider)
     if metadata is None:
         return
+    current_time = time.time() if now is None else now
+    age_text = (
+        menubar_state.format_human_time(
+            max(0.0, current_time - metadata.updated_at.timestamp()), state.language
+        )
+        if metadata.updated_at is not None
+        else None
+    )
     state.provider_sources[provider] = menubar_state.ProviderSourceState(
         source=metadata.source,
         label=metadata.label,
         freshness=(
             metadata.freshness if metadata.freshness == "reauth_required" else "stale"
         ),
-        age_text=metadata.age_text or menubar_state.format_human_time(0, state.language),
+        age_text=age_text,
+        updated_at=metadata.updated_at,
     )
+
+
+def _source_is_within_stale_window(
+    metadata: menubar_state.ProviderSourceState,
+    now: float | None,
+) -> bool:
+    if metadata.updated_at is None:
+        return False
+    current_time = time.time() if now is None else now
+    return current_time - metadata.updated_at.timestamp() <= 24 * 60 * 60
+
+
+def _apply_legacy_ocx_stale(
+    state: menubar_state.PopoverState,
+    provider: str,
+    source: menubar_state.ProviderSourceState,
+) -> None:
+    age_text = (
+        source.age_text
+        if source.freshness == "stale" and source.age_text is not None
+        else None
+    )
+    if provider == "codex":
+        state.codex_stale = {"ageText": age_text} if age_text is not None else None
+    elif provider == "antigravity":
+        state.agy_stale = {"ageText": age_text} if age_text is not None else None
+    elif provider == "grok":
+        state.grok_stale = {"ageText": age_text} if age_text is not None else None

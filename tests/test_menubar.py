@@ -7,6 +7,7 @@
 from __future__ import annotations
 
 import json
+from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from types import MappingProxyType, SimpleNamespace
@@ -52,6 +53,7 @@ def _use_estimated_panel_height(monkeypatch: pytest.MonkeyPatch) -> None:
         lambda: OcxQuotaSnapshot(MappingProxyType({}), now, now),
     )
     monkeypatch.setattr(menubar_refresh, "request_ocx_refresh", lambda: None)
+    monkeypatch.setattr(menubar_refresh, "load_route_facts", lambda: {})
 
 
 class _FakeMenu:
@@ -3198,7 +3200,7 @@ def test_missing_forced_ocx_keeps_prior_rows_and_marks_source_stale(
         "Session", 9.0, "9% used", "Resets in 1h", menubar_state.CODEX_COLOR
     )
     previous.provider_sources["codex"] = menubar_state.ProviderSourceState(
-        "ocx", "OCX", "fresh", None
+        "ocx", "OCX", "fresh", None, now
     )
     state = menubar_state._empty_state("en")
     monkeypatch.setattr(
@@ -3235,3 +3237,186 @@ def test_missing_forced_ocx_keeps_prior_rows_and_marks_source_stale(
     assert state.codex_session.percent == 9.0
     assert state.provider_sources["codex"].source == "ocx"
     assert state.provider_sources["codex"].freshness == "stale"
+
+
+def test_auto_keeps_prior_displayable_source_when_both_sources_temporarily_missing(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    now = datetime.now(UTC)
+    previous = menubar_state._empty_state("en")
+    previous.codex_session = menubar_state.QuotaRowState(
+        "Session", 19.0, "19% used", "Resets in 1h", menubar_state.CODEX_COLOR
+    )
+    previous.provider_sources["codex"] = menubar_state.ProviderSourceState(
+        "ocx", "OCX", "fresh", None, now - timedelta(minutes=30)
+    )
+    state = menubar_state._empty_state("en")
+    monkeypatch.setattr(menubar_refresh, "_quota_source_mode", lambda *_: "auto")
+    monkeypatch.setattr(menubar_refresh, "_quota_last_source", lambda *_: "ocx")
+
+    class Delegate:
+        language = "en"
+        latest_state = previous
+
+    empty = OcxQuotaSnapshot(MappingProxyType({}), now, now)
+    sources = menubar_refresh.RefreshSources(
+        {}, None, menubar_agy.AgyRefreshResult(None, True),
+        menubar_agy.fallback_projection("en"), menubar_grok.GrokRefreshResult(None, True),
+        menubar_grok.fallback_projection("en"), False, empty,
+    )
+
+    menubar_refresh._project_selected_quota_sources(
+        cast(Any, Delegate()), sources, state, PollOutcome(PollState.TOKEN_ERROR)
+    )
+
+    assert state.codex_session.percent == 19.0
+    assert state.provider_sources["codex"].freshness == "stale"
+    assert state.provider_sources["codex"].age_text != "0m"
+
+
+def test_explicit_source_never_preserves_a_different_prior_source(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    now = datetime.now(UTC)
+    previous = menubar_state._empty_state("en")
+    previous.codex_session = menubar_state.QuotaRowState(
+        "Session", 19.0, "19% used", "Resets in 1h", menubar_state.CODEX_COLOR
+    )
+    previous.provider_sources["codex"] = menubar_state.ProviderSourceState(
+        "ocx", "OCX", "fresh", None, now
+    )
+    state = menubar_state._empty_state("en")
+    monkeypatch.setattr(
+        menubar_refresh,
+        "_quota_source_mode",
+        lambda provider: "native" if provider == "codex" else "auto",
+    )
+    monkeypatch.setattr(menubar_refresh, "_quota_last_source", lambda *_: "ocx")
+
+    class Delegate:
+        language = "en"
+        latest_state = previous
+
+    sources = menubar_refresh.RefreshSources(
+        {}, None, menubar_agy.AgyRefreshResult(None, True),
+        menubar_agy.fallback_projection("en"), menubar_grok.GrokRefreshResult(None, True),
+        menubar_grok.fallback_projection("en"), False,
+        OcxQuotaSnapshot(MappingProxyType({}), now, now),
+    )
+
+    menubar_refresh._project_selected_quota_sources(
+        cast(Any, Delegate()), sources, state, PollOutcome(PollState.TOKEN_ERROR)
+    )
+
+    assert state.codex_session.available is False
+    assert "codex" not in state.provider_sources
+
+
+def test_ocx_selection_replaces_legacy_native_stale_markers(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from loaders.ocx_quota import parse_ocx_quota_payload
+
+    fixture = Path(__file__).parent / "fixtures" / "ocx_provider_quota.json"
+    ocx = parse_ocx_quota_payload(
+        json.loads(fixture.read_text(encoding="utf-8")), datetime(2026, 9, 5, tzinfo=UTC)
+    )
+    state = menubar_state._empty_state("en")
+    state.codex_stale = {"ageText": "native old"}
+    state.agy_stale = {"ageText": "native old"}
+    state.grok_stale = {"ageText": "native old"}
+    monkeypatch.setattr(menubar_refresh, "_quota_source_mode", lambda *_: "ocx")
+    monkeypatch.setattr(menubar_refresh, "_quota_last_source", lambda *_: None)
+    monkeypatch.setattr(menubar_refresh, "_save_quota_last_source", lambda *_: True)
+
+    class Delegate:
+        language = "en"
+        latest_state = menubar_state._empty_state("en")
+
+    sources = menubar_refresh.RefreshSources(
+        {}, None, menubar_agy.AgyRefreshResult(None, True),
+        menubar_agy.fallback_projection("en"), menubar_grok.GrokRefreshResult(None, True),
+        menubar_grok.fallback_projection("en"), False, ocx,
+    )
+    menubar_refresh._project_selected_quota_sources(
+        cast(Any, Delegate()), sources, state, PollOutcome(PollState.TOKEN_ERROR)
+    )
+
+    assert state.codex_stale is None
+    assert state.agy_stale is None
+    assert state.grok_stale is None
+
+
+def test_stale_ocx_selection_rebuilds_legacy_stale_age_from_ocx_timestamp() -> None:
+    from loaders.ocx_quota import parse_ocx_quota_payload
+
+    fixture = Path(__file__).parent / "fixtures" / "ocx_provider_quota.json"
+    now = datetime(2026, 9, 5, 12, tzinfo=UTC)
+    ocx = parse_ocx_quota_payload(json.loads(fixture.read_text(encoding="utf-8")), now)
+    snapshot = replace(
+        ocx.providers["codex"],
+        freshness="stale",
+        updated_at=now - timedelta(hours=2),
+    )
+    projection = menubar_state.project_ocx_quota(
+        snapshot, "en", menubar_state.CODEX_COLOR, now=now.timestamp()
+    )
+    state = menubar_state._empty_state("en")
+    state.codex_stale = {"ageText": "native old"}
+
+    menubar_refresh._apply_ocx_projection(state, "codex", projection)
+
+    assert projection.source.age_text is not None
+    assert state.codex_stale == {"ageText": projection.source.age_text}
+
+
+def test_openrouter_status_only_reauth_retains_previous_or_builds_placeholder(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from loaders.ocx_quota import parse_ocx_quota_payload
+
+    fixture = Path(__file__).parent / "fixtures" / "ocx_provider_quota.json"
+    payload = json.loads(fixture.read_text(encoding="utf-8"))
+    payload["reports"] = [r for r in payload["reports"] if r["provider"] != "openrouter"]
+    for status in payload["statuses"]:
+        if status["provider"] == "openrouter":
+            status["status"] = "reauth_required"
+    now = datetime(2026, 9, 5, tzinfo=UTC)
+    ocx = parse_ocx_quota_payload(payload, now)
+    monkeypatch.setattr(menubar_refresh, "_quota_source_mode", lambda *_: "native")
+    monkeypatch.setattr(menubar_refresh, "_quota_last_source", lambda *_: None)
+
+    def sources() -> menubar_refresh.RefreshSources:
+        return menubar_refresh.RefreshSources(
+            {}, None, menubar_agy.AgyRefreshResult(None, True),
+            menubar_agy.fallback_projection("en"), menubar_grok.GrokRefreshResult(None, True),
+            menubar_grok.fallback_projection("en"), False, ocx,
+        )
+
+    previous = menubar_state._empty_state("en")
+    previous.openrouter = menubar_state.OpenRouterState(
+        "$5.00", "$5.00", "$10.00", "$5.00", None, None, None, None, False
+    )
+
+    class WithPrevious:
+        language = "en"
+        latest_state = previous
+
+    retained = menubar_state._empty_state("en")
+    menubar_refresh._project_selected_quota_sources(
+        cast(Any, WithPrevious()), sources(), retained, PollOutcome(PollState.TOKEN_ERROR)
+    )
+    assert retained.openrouter is previous.openrouter
+    assert retained.provider_sources["openrouter"].freshness == "reauth_required"
+
+    class WithoutPrevious:
+        language = "en"
+        latest_state = menubar_state._empty_state("en")
+
+    placeholder = menubar_state._empty_state("en")
+    menubar_refresh._project_selected_quota_sources(
+        cast(Any, WithoutPrevious()), sources(), placeholder, PollOutcome(PollState.TOKEN_ERROR)
+    )
+    assert placeholder.openrouter is not None
+    assert placeholder.openrouter.headline == "unavailable"
+    assert placeholder.provider_sources["openrouter"].freshness == "reauth_required"

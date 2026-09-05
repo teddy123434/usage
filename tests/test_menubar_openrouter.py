@@ -6,7 +6,7 @@ import json
 from datetime import UTC, datetime
 from pathlib import Path
 
-from loaders.ocx_quota import NormalizedQuotaSnapshot, parse_ocx_quota_payload
+from loaders.ocx_quota import KeyBudgetUsd, NormalizedQuotaSnapshot, parse_ocx_quota_payload
 from menubar import openrouter
 
 
@@ -53,3 +53,53 @@ def test_project_openrouter_uses_key_remaining_when_account_is_missing() -> None
     assert state is not None
     assert state.headline == "$8.00"
     assert state.account_remaining is None
+
+
+def test_project_openrouter_uses_explicit_unlimited_headline_without_zero_placeholders() -> None:
+    snapshot = _snapshot()
+    unlimited = NormalizedQuotaSnapshot(
+        provider="openrouter",
+        source="ocx",
+        source_label="OCX",
+        windows=(),
+        account_credits_usd=None,
+        key_budget_usd=KeyBudgetUsd(0, 0, 0, 0, None, True, None, "none"),
+        updated_at=snapshot.updated_at,
+        freshness="fresh",
+        provenance=snapshot.provenance,
+        details={},
+    )
+
+    state = openrouter.project_quota(unlimited, "en")
+
+    assert state is not None
+    assert state.headline == "unlimited"
+    assert state.key_unlimited is True
+    assert state.key_limit is None
+    assert state.key_remaining is None
+    assert state.key_percent is None
+    assert state.reset_interval == "none"
+    assert state.reset_text == "none"
+
+
+def test_project_openrouter_keeps_cadence_when_no_reset_timestamp_exists() -> None:
+    snapshot = _snapshot()
+    cadence_only = NormalizedQuotaSnapshot(
+        provider="openrouter",
+        source="ocx",
+        source_label="OCX",
+        windows=(),
+        account_credits_usd=None,
+        key_budget_usd=KeyBudgetUsd(2, 10, 8, 20, None, False, None, "monthly"),
+        updated_at=snapshot.updated_at,
+        freshness="fresh",
+        provenance=snapshot.provenance,
+        details={},
+    )
+
+    state = openrouter.project_quota(cadence_only, "en")
+
+    assert state is not None
+    assert state.reset_interval == "monthly"
+    assert state.reset_at is None
+    assert state.reset_text == "monthly"

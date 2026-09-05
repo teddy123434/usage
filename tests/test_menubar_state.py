@@ -322,6 +322,46 @@ def test_project_ocx_quota_preserves_valid_zero_without_reset() -> None:
     assert projection.rows[0].reset_text == "Resets in --"
 
 
+def test_native_adapter_retains_the_loader_timestamp() -> None:
+    updated_at = datetime(2026, 9, 5, 1, 2, 3, tzinfo=UTC)
+    row = menubar_state.QuotaRowState(
+        "Weekly",
+        25.0,
+        "25% used",
+        "Resets in 1d",
+        menubar_state.CODEX_COLOR,
+        updated_at=updated_at,
+    )
+
+    snapshot = menubar_state.native_quota_snapshot("codex", (row,))
+
+    assert snapshot is not None
+    assert snapshot.updated_at == updated_at
+
+
+def test_source_age_is_recomputed_from_retained_updated_at() -> None:
+    updated_at = datetime(2026, 9, 5, 1, tzinfo=UTC)
+    snapshot = menubar_state.NormalizedQuotaSnapshot(
+        provider="codex",
+        source="ocx",
+        source_label="OCX",
+        windows=(),
+        account_credits_usd=None,
+        key_budget_usd=None,
+        updated_at=updated_at,
+        freshness="stale",
+        provenance=None,
+        details={},
+    )
+
+    source = menubar_state.provider_source_state(
+        snapshot, "en", now=datetime(2026, 9, 5, 3, 30, tzinfo=UTC).timestamp()
+    )
+
+    assert source.updated_at == updated_at
+    assert source.age_text == "2h 30m"
+
+
 def test_history_load_error_state_none_when_no_reason() -> None:
     assert menubar_state.history_load_error_state(None, "en") is None
 

@@ -58,6 +58,10 @@ def project_quota(
         period_end = parse_iso8601_utc_or_raise(quota.period_end).timestamp()
     except (TypeError, ValueError):
         return None
+    try:
+        updated_at = parse_iso8601_utc_or_raise(quota.fetched_at)
+    except (TypeError, ValueError):
+        updated_at = None
     if period_end < current_time:
         return None
     stale = _stale_state(quota.fetched_at, current_time, language)
@@ -74,6 +78,7 @@ def project_quota(
             ),
             color=_bar_color(used, GROK_COLOR),
             available=True,
+            updated_at=updated_at,
         ),
         stale=stale,
     )

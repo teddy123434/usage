@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import time
 from dataclasses import dataclass
+from datetime import datetime
 from typing import cast
 
 import quota.burn_rate as burn_rate
@@ -75,6 +76,10 @@ def project_quota(
         min(quota.groups, key=_group_remaining_percent),
     )
     current_time = time.time() if now is None else now
+    try:
+        updated_at = parse_iso8601_utc_or_raise(quota.fetched_at)
+    except (TypeError, ValueError):
+        updated_at = None
     age_minutes = _cache_age_minutes(quota.fetched_at, current_time)
     stale = _stale_state(quota.fetched_at, current_time, language)
     session_forecast: float | None = None
@@ -109,6 +114,7 @@ def project_quota(
             language,
             age_minutes,
             forecast_seconds=session_forecast,
+            updated_at=updated_at,
         ),
         weekly=_window_row(
             _t(language, "weekly_label"),
@@ -117,6 +123,7 @@ def project_quota(
             age_minutes,
             forecast_seconds=weekly_forecast,
             warning_max_seconds=AGY_WEEKLY_WARNING_MAX_SECONDS,
+            updated_at=updated_at,
         ),
         stale=stale,
         five_hour=selected.five_hour,
@@ -202,6 +209,7 @@ def _window_row(
     age_minutes: int = 0,
     forecast_seconds: float | None = None,
     warning_max_seconds: float | None = None,
+    updated_at: datetime | None = None,
 ) -> QuotaRowState:
     remaining = _remaining_percent(window)
     used = 100.0 - remaining
@@ -243,6 +251,7 @@ def _window_row(
         color=_bar_color(used, AGY_COLOR),
         warning=warning,
         available=True,
+        updated_at=updated_at,
     )
 
 

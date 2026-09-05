@@ -9,17 +9,27 @@
 from __future__ import annotations
 
 import ipaddress
+import os
+import re
 from collections.abc import Mapping
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Literal
 from urllib.parse import urlsplit
 
+from loaders.codex_paths import codex_home
 from loaders.ocx_quota import NormalizedQuotaSnapshot, QuotaSource
 
 type SourceMode = Literal["auto", "native", "ocx"]
 type SelectionReason = Literal[
     "explicit", "route", "single", "retained", "native_first", "unavailable"
 ]
+
+_MAX_ROUTE_CONFIG_BYTES = 1024 * 1024
+_CODEX_MARKER = "# Auto-injected by opencodex"
+_GROK_BEGIN = "# >>> opencodex managed block — do not edit (removed by `ocx stop`) >>>"
+_GROK_END = "# <<< opencodex managed block <<<"
+_QUOTED_VALUE = re.compile(r'^\s*[A-Za-z_]+\s*=\s*"([^"\\]*)"\s*(?:#.*)?$')
 
 
 @dataclass(frozen=True, slots=True)
@@ -110,6 +120,117 @@ def proven_ocx_route(
         )
     # Antigravity has no stable route ownership marker in this release.
     return False
+
+
+def load_route_facts(
+    *,
+    codex_config_path: Path | None = None,
+    grok_config_path: Path | None = None,
+    env: Mapping[str, str] | None = None,
+) -> dict[str, dict[str, object]]:
+    """Read only native-client routing files and return an allowlisted fact set."""
+    environment = os.environ if env is None else env
+    codex_path = codex_config_path or codex_home() / "config.toml"
+    grok_path = grok_config_path or Path(
+        environment.get("GROK_HOME", os.path.expanduser("~/.grok"))
+    ) / "config.toml"
+    return {
+        "claude": _claude_route_facts(environment),
+        "codex": _codex_route_facts(_read_route_config(codex_path)),
+        "antigravity": {},
+        "grok": _grok_route_facts(_read_route_config(grok_path)),
+    }
+
+
+def _read_route_config(path: Path) -> str:
+    try:
+        with path.open("rb") as stream:
+            data = stream.read(_MAX_ROUTE_CONFIG_BYTES + 1)
+        if len(data) > _MAX_ROUTE_CONFIG_BYTES:
+            return ""
+        return data.decode("utf-8")
+    except (OSError, UnicodeDecodeError):
+        return ""
+
+
+def _claude_route_facts(environment: Mapping[str, str]) -> dict[str, object]:
+    base_url = environment.get("ANTHROPIC_BASE_URL")
+    if (
+        environment.get("ANTHROPIC_AUTH_TOKEN") != "opencodex-proxy"
+        or not _is_loopback_url(base_url)
+    ):
+        return {}
+    return {
+        "ANTHROPIC_AUTH_TOKEN": "opencodex-proxy",
+        "ANTHROPIC_BASE_URL": base_url,
+    }
+
+
+def _codex_route_facts(content: str) -> dict[str, object]:
+    lines = content.splitlines()
+    first_table = next(
+        (index for index, line in enumerate(lines) if line.lstrip().startswith("[")),
+        len(lines),
+    )
+    provider = _assignment_value(lines[:first_table], "model_provider")
+    table_index = next(
+        (
+            index
+            for index, line in enumerate(lines)
+            if line.strip() == "[model_providers.opencodex]"
+        ),
+        -1,
+    )
+    marker_owned = table_index > 0 and lines[table_index - 1] == _CODEX_MARKER
+    base_url = _table_value(lines, table_index, "base_url") if table_index >= 0 else None
+    if provider != "opencodex" or not marker_owned or not _is_loopback_url(base_url):
+        return {}
+    return {"ocx_owned_marker": True, "provider": provider, "base_url": base_url}
+
+
+def _grok_route_facts(content: str) -> dict[str, object]:
+    lines = content.splitlines()
+    begin_rows = [index for index, line in enumerate(lines) if line == _GROK_BEGIN]
+    end_rows = [index for index, line in enumerate(lines) if line == _GROK_END]
+    if len(begin_rows) != 1 or len(end_rows) != 1:
+        return {}
+    begin = begin_rows[0]
+    end = end_rows[0]
+    if end <= begin:
+        return {}
+    region = lines[begin + 1 : end]
+    table_index = next(
+        (
+            index
+            for index, line in enumerate(region)
+            if line.strip() == "[model_providers.opencodex]"
+        ),
+        -1,
+    )
+    base_url = _table_value(region, table_index, "base_url") if table_index >= 0 else None
+    if not _is_loopback_url(base_url):
+        return {}
+    return {"managed_block_complete": True, "base_url": base_url}
+
+
+def _assignment_value(lines: list[str], key: str) -> str | None:
+    for line in lines:
+        if line.split("=", 1)[0].strip() != key:
+            continue
+        match = _QUOTED_VALUE.fullmatch(line)
+        return match.group(1) if match is not None else None
+    return None
+
+
+def _table_value(lines: list[str], start: int, key: str) -> str | None:
+    for line in lines[start + 1 :]:
+        if line.lstrip().startswith("["):
+            return None
+        if line.split("=", 1)[0].strip() != key:
+            continue
+        match = _QUOTED_VALUE.fullmatch(line)
+        return match.group(1) if match is not None else None
+    return None
 
 
 def _is_loopback_url(value: object) -> bool:

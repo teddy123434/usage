@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from datetime import UTC, datetime
+from pathlib import Path
 from types import MappingProxyType
 
 import pytest
@@ -10,6 +11,7 @@ import pytest
 from loaders.ocx_quota import NormalizedQuotaSnapshot, NormalizedQuotaWindow
 from menubar.quota_sources import (
     SourceSelection,
+    load_route_facts,
     proven_ocx_route,
     select_quota_source,
 )
@@ -335,3 +337,75 @@ def test_route_accepts_well_formed_loopback_authority(base_url: str) -> None:
             "base_url": base_url,
         },
     ) is True
+
+
+def test_load_route_facts_reads_only_exact_native_owned_blocks(tmp_path: Path) -> None:
+    codex = tmp_path / "codex.toml"
+    grok = tmp_path / "grok.toml"
+    codex.write_text(
+        'model_provider = "opencodex"\n'
+        '# Auto-injected by opencodex\n'
+        '[model_providers.opencodex]\n'
+        'base_url = "http://127.0.0.1:10100/v1"\n',
+        encoding="utf-8",
+    )
+    grok.write_text(
+        '# >>> opencodex managed block — do not edit (removed by `ocx stop`) >>>\n'
+        '[model_providers.opencodex]\n'
+        'base_url = "http://127.0.0.1:10100/v1"\n'
+        '# <<< opencodex managed block <<<\n',
+        encoding="utf-8",
+    )
+
+    facts = load_route_facts(
+        codex_config_path=codex,
+        grok_config_path=grok,
+        env={
+            "ANTHROPIC_BASE_URL": "http://127.0.0.1:10100",
+            "ANTHROPIC_AUTH_TOKEN": "opencodex-proxy",
+        },
+    )
+
+    assert proven_ocx_route("codex", route=facts["codex"])
+    assert proven_ocx_route("grok", route=facts["grok"])
+    assert proven_ocx_route("claude", env=facts["claude"])
+    assert facts["antigravity"] == {}
+
+
+def test_load_route_facts_rejects_bare_loopback_and_user_authored_marker(tmp_path: Path) -> None:
+    codex = tmp_path / "codex.toml"
+    grok = tmp_path / "grok.toml"
+    codex.write_text(
+        'model_provider = "opencodex"\n'
+        '# user says opencodex\n'
+        '[model_providers.opencodex]\n'
+        'base_url = "http://127.0.0.1:10100/v1"\n',
+        encoding="utf-8",
+    )
+    grok.write_text('base_url = "http://127.0.0.1:10100/v1"\n', encoding="utf-8")
+
+    facts = load_route_facts(
+        codex_config_path=codex, grok_config_path=grok, env={}
+    )
+
+    assert not proven_ocx_route("codex", route=facts["codex"])
+    assert not proven_ocx_route("grok", route=facts["grok"])
+
+
+def test_load_route_facts_rejects_reversed_grok_managed_block(tmp_path: Path) -> None:
+    codex = tmp_path / "codex.toml"
+    grok = tmp_path / "grok.toml"
+    codex.write_text("", encoding="utf-8")
+    grok.write_text(
+        "# <<< opencodex managed block <<<\n"
+        "[model_providers.opencodex]\n"
+        'base_url = "http://127.0.0.1:10100/v1"\n'
+        "# >>> opencodex managed block — do not edit (removed by `ocx stop`) >>>\n",
+        encoding="utf-8",
+    )
+
+    facts = load_route_facts(
+        codex_config_path=codex, grok_config_path=grok, env={}
+    )
+
+    assert facts["grok"] == {}
