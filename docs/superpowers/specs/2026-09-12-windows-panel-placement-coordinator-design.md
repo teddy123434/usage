@@ -27,6 +27,8 @@ geometry.
 - Use the latest window anchor when native geometry commits.
 - Coalesce placement bursts; never run two JavaScript placement transitions
   concurrently.
+- Preserve upstream show ordering: a newly opened panel becomes visible only
+  after its accepted native placement callback.
 - Never run WebView or WinForms calls while the coordinator state lock is held.
 - Preserve the last committed viewport when a newer JavaScript application is
   unavailable.
@@ -37,11 +39,15 @@ The controller owns these values under one short-lived state lock:
 
 - a monotonic ticket sequence;
 - the newest desired request and generation;
+- a pending show intent that remains set until an accepted native commit or an
+  explicit hide cancels it;
 - the last JavaScript-applied committed viewport;
 - whether the placement worker is running.
 
 `_place_window()` only publishes the newest request and ensures one daemon
-worker exists. It does not evaluate JavaScript or resize the window.
+worker exists. It does not evaluate JavaScript or resize the window. A
+`show_after_commit` request sets the separate pending show intent, so later
+coalesced height or monitor requests cannot drop it.
 
 The worker repeatedly takes the newest pending request, resolves its target
 monitor and viewport, then applies the generated JavaScript off the UI thread.
@@ -58,6 +64,13 @@ After JavaScript returns:
 
 The worker checks and clears its running flag under the same lock that accepts
 new requests, so a request cannot be lost while the worker exits.
+
+`show_panel()` requests placement with `show_after_commit=True` and does not
+queue a separate show mutation. The accepted native callback resizes, moves,
+then calls the guarded UI-thread show method. JavaScript unavailability leaves
+the show intent pending and does not show an unplaced window; `on_loaded()` or
+the next content-height request retries placement. An explicit hide clears the
+pending show intent.
 
 ## Native commit
 
@@ -90,6 +103,10 @@ cases:
   native geometry is never queued;
 - a burst runs at most one JavaScript transition at a time and converges to the
   newest viewport;
+- a coalesced show request runs after accepted resize/move, and a later height
+  request cannot drop it;
+- an unavailable first-show request performs no show, resize, or move; the next
+  successful loaded-document request performs `resize`, `move`, then `show`;
 - a newer unavailable transition restores the prior committed native viewport;
 - a queued native callback is rejected whenever its generation is no longer
   both desired and committed, including an equal-viewport return path;
