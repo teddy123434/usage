@@ -784,8 +784,10 @@ class _WindowsTrayController:
         self._panel_placement_lock = threading.Lock()
         # Request publication and native geometry commits share this gate. When
         # both locks are needed, acquire this gate before _panel_placement_lock;
-        # reconciliation republishes only after releasing the gate.
-        self._panel_native_commit_lock = threading.Lock()
+        # reconciliation republishes only after releasing the gate. It is
+        # reentrant because the commit wrapper calls the independently gated
+        # native-placement interface.
+        self._panel_native_commit_lock = threading.RLock()
         self._panel_placement_sequence = 0
         self._panel_placement_desired_generation = 0
         self._panel_placement_pending: _PanelPlacementRequest | None = None
@@ -1130,7 +1132,7 @@ class _WindowsTrayController:
             return
         launch_worker = False
         with self._panel_native_commit_lock:
-            if self.stopping.is_set():
+            if self.stopping.is_set() or not self.visible:
                 return
             with self._panel_placement_lock:
                 self._panel_placement_sequence += 1
@@ -1247,7 +1249,8 @@ class _WindowsTrayController:
         with self._panel_native_commit_lock:
             with self._panel_placement_lock:
                 if (
-                    rendered_viewport.generation
+                    not self.visible
+                    or rendered_viewport.generation
                     != self._panel_placement_desired_generation
                     or rendered_viewport != self._panel_placement_committed
                 ):
@@ -1270,46 +1273,57 @@ class _WindowsTrayController:
         rendered_viewport: _RenderedPanelViewport | None = None,
         show_after_commit: bool = False,
     ) -> bool:
-        if self.window is None or self.stopping.is_set():
-            return False
-        if rendered_viewport is not None:
-            with self._panel_placement_lock:
+        with self._panel_native_commit_lock:
+            if self.window is None or self.stopping.is_set():
+                return False
+            if rendered_viewport is not None:
+                with self._panel_placement_lock:
+                    if (
+                        not self.visible
+                        or rendered_viewport.generation
+                        != self._panel_placement_desired_generation
+                        or rendered_viewport != self._panel_placement_committed
+                    ):
+                        return False
+            placement = self._resolve_panel_placement(force_default=force_default)
+            if placement is None:
+                return False
+            if rendered_viewport is not None:
+                with self._panel_placement_lock:
+                    if (
+                        not self.visible
+                        or rendered_viewport.generation
+                        != self._panel_placement_desired_generation
+                        or rendered_viewport != self._panel_placement_committed
+                    ):
+                        return False
                 if (
-                    rendered_viewport.generation
-                    != self._panel_placement_desired_generation
-                    or rendered_viewport != self._panel_placement_committed
+                    placement.work_area != rendered_viewport.work_area
+                    or placement.viewport != rendered_viewport.viewport
                 ):
-                    return False
-        placement = self._resolve_panel_placement(force_default=force_default)
-        if placement is None:
+                    return not self.stopping.is_set() and self.visible
+            viewport = (
+                rendered_viewport.viewport
+                if rendered_viewport is not None
+                else placement.viewport
+            )
+            width = int(round(viewport.width))
+            height = int(round(viewport.height))
+            self.window.resize(width, height)
+            position = (
+                placement.anchor
+                if placement.anchor is not None
+                else self._default_window_position(placement.work_area, width, height)
+            )
+            self.window.move(
+                *self._clamp_window_position(position, placement.work_area, width, height)
+            )
+            self._positioned_this_show = True
+            if show_after_commit:
+                self._show_panel_on_ui_thread()
+                with self._panel_placement_lock:
+                    self._panel_placement_show_pending = False
             return False
-        if rendered_viewport is not None and (
-            placement.work_area != rendered_viewport.work_area
-            or placement.viewport != rendered_viewport.viewport
-        ):
-            return not self.stopping.is_set()
-        viewport = (
-            rendered_viewport.viewport
-            if rendered_viewport is not None
-            else placement.viewport
-        )
-        width = int(round(viewport.width))
-        height = int(round(viewport.height))
-        self.window.resize(width, height)
-        position = (
-            placement.anchor
-            if placement.anchor is not None
-            else self._default_window_position(placement.work_area, width, height)
-        )
-        self.window.move(
-            *self._clamp_window_position(position, placement.work_area, width, height)
-        )
-        self._positioned_this_show = True
-        if show_after_commit:
-            self._show_panel_on_ui_thread()
-            with self._panel_placement_lock:
-                self._panel_placement_show_pending = False
-        return False
 
     def _dispatch_window_mutation(self, mutation: Callable[[], None]) -> None:
         """Serialize geometry mutations onto the native WinForms UI thread."""
@@ -1751,11 +1765,17 @@ class _WindowsTrayController:
             return
         if self.visible:
             self._save_window_position()
-            self.visible = False
-            self._positioned_this_show = False
-            with self._panel_placement_lock:
-                self._panel_placement_show_pending = False
-            self.window.hide()
+            with self._panel_native_commit_lock:
+                self.visible = False
+                self._positioned_this_show = False
+                with self._panel_placement_lock:
+                    self._panel_placement_sequence += 1
+                    self._panel_placement_desired_generation = (
+                        self._panel_placement_sequence
+                    )
+                    self._panel_placement_pending = None
+                    self._panel_placement_show_pending = False
+                self.window.hide()
             return
         self.visible = True
         self._place_window(show_after_commit=True)

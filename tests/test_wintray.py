@@ -742,6 +742,7 @@ def test_physical_saved_position_returns_to_secondary_screen_after_restart(
     monkeypatch.setitem(sys.modules, "webview", SimpleNamespace(screens=screens))
     moves: list[tuple[int, int]] = []
     controller = wintray._WindowsTrayController(mock=True, interval=60)
+    controller.visible = True
     controller.window = SimpleNamespace(
         x=0, y=0, resize=lambda *_args: None, move=lambda x, y: moves.append((x, y))
     )
@@ -775,6 +776,7 @@ def test_physical_saved_position_uses_current_secondary_dpi_scale(
     monkeypatch.setitem(sys.modules, "webview", SimpleNamespace(screens=screens))
     moves: list[tuple[int, int]] = []
     controller = wintray._WindowsTrayController(mock=True, interval=60)
+    controller.visible = True
     controller.window = SimpleNamespace(
         x=0, y=0, resize=lambda *_args: None, move=lambda x, y: moves.append((x, y))
     )
@@ -817,6 +819,7 @@ def test_dpi_scaled_monitor_placement_uses_logical_coordinates(
         move=lambda x, y: mutations.append(("move", x, y)),
     )
     controller = wintray._WindowsTrayController(mock=True, interval=60)
+    controller.visible = True
     controller.window = window
     controller._content_height = 400
     controller._positioned_this_show = True
@@ -843,6 +846,7 @@ def test_physical_dpi_scaled_screens_are_converted_to_logical_coordinates(
     monkeypatch.setitem(sys.modules, "webview", SimpleNamespace(screens=screens))
     mutations: list[tuple[str, int, int]] = []
     controller = wintray._WindowsTrayController(mock=True, interval=60)
+    controller.visible = True
     controller.window = SimpleNamespace(
         x=0,
         y=0,
@@ -879,6 +883,7 @@ def test_physical_dpi_scaled_saved_position_is_clamped_to_logical_screen(
     monkeypatch.setitem(sys.modules, "webview", SimpleNamespace(screens=screens))
     moves: list[tuple[int, int]] = []
     controller = wintray._WindowsTrayController(mock=True, interval=60)
+    controller.visible = True
     controller.window = SimpleNamespace(
         x=0, y=0, resize=lambda *_args: None, move=lambda x, y: moves.append((x, y))
     )
@@ -913,6 +918,7 @@ def test_physical_dpi_scaled_screens_use_logical_height_for_panel_viewport(
         return True
 
     controller = wintray._WindowsTrayController(mock=True, interval=60)
+    controller.visible = True
     controller.window = SimpleNamespace(
         x=0,
         y=0,
@@ -952,6 +958,7 @@ def test_high_dpi_panel_scrolls_at_fixed_scale_without_bottom_clipping(
         return True
 
     controller = wintray._WindowsTrayController(mock=True, interval=60)
+    controller.visible = True
     controller.window = SimpleNamespace(
         x=0,
         y=0,
@@ -991,6 +998,7 @@ def test_standard_dpi_panel_scrolls_at_fixed_scale(
         return True
 
     controller = wintray._WindowsTrayController(mock=True, interval=60)
+    controller.visible = True
     controller.window = SimpleNamespace(
         x=0,
         y=0,
@@ -1056,6 +1064,7 @@ def test_failed_panel_viewport_does_not_resize_tall_window(
         move=lambda x, y: mutations.append(("move", x, y)),
     )
     controller = wintray._WindowsTrayController(mock=True, interval=60)
+    controller.visible = True
     controller.window = window
     controller._content_height = 1000
     _run_panel_placement_worker_inline(monkeypatch, controller)
@@ -1094,6 +1103,7 @@ def test_first_show_uses_saved_short_monitor_for_scroll_mode(
         move=lambda x, y: mutations.append(("move", x, y)),
     )
     controller = wintray._WindowsTrayController(mock=True, interval=60)
+    controller.visible = True
     controller.window = window
     controller._content_height = 1000
     controller._positioned_this_show = False
@@ -1132,6 +1142,7 @@ def test_forced_reset_uses_tall_primary_monitor_for_scroll_mode(
         move=lambda x, y: mutations.append(("move", x, y)),
     )
     controller = wintray._WindowsTrayController(mock=True, interval=60)
+    controller.visible = True
     controller.window = window
     controller._content_height = 1000
     controller._positioned_this_show = True
@@ -1170,6 +1181,7 @@ def test_background_window_mutation_is_dispatched_to_ui_thread(
 
     native = SimpleNamespace(InvokeRequired=True, BeginInvoke=begin_invoke)
     controller = wintray._WindowsTrayController(mock=True, interval=60)
+    controller.visible = True
     controller.window = SimpleNamespace(
         native=native,
         evaluate_js=evaluate_js,
@@ -1184,7 +1196,8 @@ def test_background_window_mutation_is_dispatched_to_ui_thread(
     )
     worker = threading.Thread(target=controller._place_window)
     worker.start()
-    worker.join()
+    worker.join(2)
+    assert not worker.is_alive()
 
     assert mutation_threads == []
     assert javascript_threads == [worker.ident]
@@ -1220,6 +1233,7 @@ def test_delayed_ui_placement_uses_fresh_anchor_with_same_target_viewport(
         move=lambda x, y: mutations.append(("move", x, y)),
     )
     controller = wintray._WindowsTrayController(mock=True, interval=60)
+    controller.visible = True
     controller.window = window
     controller._content_height = 1000
     controller._positioned_this_show = True
@@ -1242,7 +1256,7 @@ def test_delayed_ui_placement_uses_fresh_anchor_with_same_target_viewport(
     assert len(launchers) == 1
     worker = threading.Thread(target=launchers.pop(), name="placement-worker")
     worker.start()
-    worker.join()
+    worker.join(2)
     assert not worker.is_alive()
     window.x, window.y = 1400, 100
     scheduled_drains.pop()()
@@ -1279,6 +1293,7 @@ def test_delayed_cross_monitor_drag_reconciles_scroll_mode_without_new_event(
         move=lambda x, y: mutations.append(("move", x, y)),
     )
     controller = wintray._WindowsTrayController(mock=True, interval=60)
+    controller.visible = True
     controller.window = window
     controller._content_height = 1000
     controller._positioned_this_show = True
@@ -1301,7 +1316,7 @@ def test_delayed_cross_monitor_drag_reconciles_scroll_mode_without_new_event(
     assert len(launchers) == 1
     worker = threading.Thread(target=launchers.pop(), name="placement-worker")
     worker.start()
-    worker.join()
+    worker.join(2)
     assert not worker.is_alive()
     window.x, window.y = 100, 100
     scheduled_drains.pop(0)()
@@ -1311,7 +1326,8 @@ def test_delayed_cross_monitor_drag_reconciles_scroll_mode_without_new_event(
         target=launchers.pop(), name="placement-reconciliation-worker"
     )
     reconciliation_worker.start()
-    reconciliation_worker.join()
+    reconciliation_worker.join(2)
+    assert not reconciliation_worker.is_alive()
     assert reconciled.is_set()
     while scheduled_drains:
         scheduled_drains.pop(0)()
@@ -1332,6 +1348,7 @@ def test_native_commit_rejects_old_generation_even_when_viewport_matches_again(
     old_rendered = wintray._RenderedPanelViewport(work_area, viewport, generation=1)
     current_rendered = wintray._RenderedPanelViewport(work_area, viewport, generation=2)
     controller = wintray._WindowsTrayController(mock=True, interval=60)
+    controller.visible = True
     controller.window = SimpleNamespace(
         resize=lambda width, height: mutations.append(("resize", width, height)),
         move=lambda x, y: mutations.append(("move", x, y)),
@@ -1373,6 +1390,7 @@ def test_newer_request_supersedes_old_applied_viewport_before_native_publish(
         PanelViewport(380, 1000, 1000, False),
     )
     controller = wintray._WindowsTrayController(mock=True, interval=60)
+    controller.visible = True
     controller.window = SimpleNamespace(
         evaluate_js=lambda code: evaluate_js(code),
         resize=lambda _width, _height: None,
@@ -1460,7 +1478,7 @@ def test_native_commit_linearizes_request_publication_before_resize_and_move(
 
     class ObservedNativeCommitLock:
         def __init__(self) -> None:
-            self._lock = threading.Lock()
+            self._lock = threading.RLock()
 
         def __enter__(self) -> None:
             if threading.current_thread().name == "request-publisher":
@@ -1476,6 +1494,7 @@ def test_native_commit_linearizes_request_publication_before_resize_and_move(
         PanelViewport(380, 776, 1000, True),
     )
     controller = wintray._WindowsTrayController(mock=True, interval=60)
+    controller.visible = True
     controller.__dict__["_panel_native_commit_lock"] = ObservedNativeCommitLock()
     resolve_calls = 0
 
@@ -1537,6 +1556,83 @@ def test_native_commit_linearizes_request_publication_before_resize_and_move(
     assert controller._panel_placement_desired_generation == 2
 
 
+def test_direct_native_commit_linearizes_request_publication_before_resize_and_move(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    commit_resolving = threading.Event()
+    publisher_waiting = threading.Event()
+    native_calls: list[tuple[str, int]] = []
+
+    class ObservedNativeCommitLock:
+        def __init__(self) -> None:
+            self._lock = threading.RLock()
+
+        def __enter__(self) -> None:
+            if threading.current_thread().name == "request-publisher":
+                publisher_waiting.set()
+            self._lock.acquire()
+
+        def __exit__(self, *_args: object) -> None:
+            self._lock.release()
+
+    placement = wintray._PanelPlacement(
+        (1000, 0, 2000, 800),
+        (1200, 100),
+        PanelViewport(380, 776, 1000, True),
+    )
+    rendered = wintray._RenderedPanelViewport(
+        placement.work_area,
+        placement.viewport,
+        generation=1,
+    )
+    controller = wintray._WindowsTrayController(mock=True, interval=60)
+    controller.visible = True
+    controller.__dict__["_panel_native_commit_lock"] = ObservedNativeCommitLock()
+
+    def resolve_placement(*, force_default: bool = False) -> wintray._PanelPlacement:
+        del force_default
+        commit_resolving.set()
+        assert publisher_waiting.wait(2)
+        return placement
+
+    def record_native_call(operation: str) -> None:
+        with controller._panel_placement_lock:
+            native_calls.append(
+                (operation, controller._panel_placement_desired_generation)
+            )
+
+    controller.window = SimpleNamespace(
+        resize=lambda *_args: record_native_call("resize"),
+        move=lambda *_args: record_native_call("move"),
+    )
+    with controller._panel_placement_lock:
+        controller._panel_placement_sequence = rendered.generation
+        controller._panel_placement_desired_generation = rendered.generation
+        controller._panel_placement_committed = rendered
+
+    monkeypatch.setattr(controller, "_resolve_panel_placement", resolve_placement)
+    monkeypatch.setattr(controller, "_launch_panel_placement_worker", lambda: None)
+
+    native_commit = threading.Thread(
+        target=lambda: controller._place_window_on_ui_thread(
+            rendered_viewport=rendered
+        ),
+        name="direct-native-commit",
+    )
+    native_commit.start()
+    assert commit_resolving.wait(2)
+    publisher = threading.Thread(target=controller._place_window, name="request-publisher")
+    publisher.start()
+
+    native_commit.join(2)
+    publisher.join(2)
+    assert not native_commit.is_alive()
+    assert not publisher.is_alive()
+
+    assert native_calls == [("resize", 1), ("move", 1)]
+    assert controller._panel_placement_desired_generation == 2
+
+
 def test_placement_worker_coalesces_burst_to_newest_pending_request(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -1561,6 +1657,7 @@ def test_placement_worker_coalesces_burst_to_newest_pending_request(
     )
     placements = iter((first, newest))
     controller = wintray._WindowsTrayController(mock=True, interval=60)
+    controller.visible = True
 
     def evaluate_js(code: str) -> str:
         nonlocal active_javascript_calls, max_active_javascript_calls
@@ -1657,6 +1754,7 @@ def test_request_published_during_worker_exit_is_not_lost(
     )
     placements = iter((first, newest))
     controller = wintray._WindowsTrayController(mock=True, interval=60)
+    controller.visible = True
     controller.__dict__["_panel_placement_lock"] = ExitBoundaryLock()
     controller.window = SimpleNamespace(evaluate_js=lambda _code: "applied")
     monkeypatch.setattr(
@@ -1710,6 +1808,7 @@ def test_unavailable_non_scroll_viewport_does_not_publish_generation(
     callbacks: list[Callable[[], None]] = []
     launchers: list[Callable[[], None]] = []
     controller = wintray._WindowsTrayController(mock=True, interval=60)
+    controller.visible = True
     controller.window = SimpleNamespace(evaluate_js=lambda _code: False)
     monkeypatch.setattr(
         controller,
@@ -2637,7 +2736,206 @@ def test_queued_show_panel_does_not_show_after_being_hidden(
     controller.show_panel()
     callbacks.pop()()
 
-    assert calls == ["hide", "resize", "move"]
+    assert calls == ["hide"]
+    assert controller._panel_placement_desired_generation == 2
+    assert controller._panel_placement_pending is None
+    assert controller._panel_placement_show_pending is False
+
+
+def test_hide_cancels_pending_placement_before_worker_runs(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    callbacks: list[Callable[[], None]] = []
+    launchers: list[Callable[[], None]] = []
+    calls: list[str] = []
+    controller = wintray._WindowsTrayController(mock=True, interval=60)
+    controller.window = SimpleNamespace(
+        x=0,
+        y=0,
+        evaluate_js=lambda _code: calls.append("javascript"),
+        resize=lambda *_args: calls.append("resize"),
+        move=lambda *_args: calls.append("move"),
+        show=lambda: calls.append("show"),
+        hide=lambda: calls.append("hide"),
+    )
+    monkeypatch.setattr(controller, "_dispatch_window_mutation", callbacks.append)
+    monkeypatch.setattr(
+        controller,
+        "_launch_panel_placement_worker",
+        lambda: launchers.append(controller._run_panel_placement_worker),
+    )
+    monkeypatch.setattr(controller, "_update_taskbar_progress", lambda _percent: None)
+    monkeypatch.setattr(controller, "inject_state", lambda *, force=False: None)
+    monkeypatch.setattr(controller, "refresh", lambda: None)
+    monkeypatch.setattr(controller, "_save_window_position", lambda: None)
+
+    controller.show_panel()
+    assert len(launchers) == 1
+    controller.show_panel()
+    launchers.pop()()
+
+    assert calls == ["hide"]
+    assert callbacks == []
+    assert controller._panel_placement_desired_generation == 2
+    assert controller._panel_placement_pending is None
+    assert controller._panel_placement_show_pending is False
+
+
+def test_in_flight_native_commit_finishes_before_hide(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    commit_resolving = threading.Event()
+    hider_waiting = threading.Event()
+    calls: list[str] = []
+
+    class ObservedNativeCommitLock:
+        def __init__(self) -> None:
+            self._lock = threading.RLock()
+
+        def __enter__(self) -> None:
+            if threading.current_thread().name == "panel-hider":
+                hider_waiting.set()
+            self._lock.acquire()
+
+        def __exit__(self, *_args: object) -> None:
+            self._lock.release()
+
+    placement = wintray._PanelPlacement(
+        (0, 0, 1000, 800),
+        (100, 100),
+        PanelViewport(380, 776, 1000, True),
+    )
+    rendered = wintray._RenderedPanelViewport(
+        placement.work_area,
+        placement.viewport,
+        generation=1,
+    )
+    controller = wintray._WindowsTrayController(mock=True, interval=60)
+    controller.visible = True
+    controller.__dict__["_panel_native_commit_lock"] = ObservedNativeCommitLock()
+    controller.window = SimpleNamespace(
+        resize=lambda *_args: calls.append("resize"),
+        move=lambda *_args: calls.append("move"),
+        show=lambda: calls.append("show"),
+        hide=lambda: calls.append("hide"),
+    )
+    with controller._panel_placement_lock:
+        controller._panel_placement_sequence = rendered.generation
+        controller._panel_placement_desired_generation = rendered.generation
+        controller._panel_placement_committed = rendered
+        controller._panel_placement_show_pending = True
+
+    def resolve_placement(*, force_default: bool = False) -> wintray._PanelPlacement:
+        del force_default
+        commit_resolving.set()
+        assert hider_waiting.wait(2)
+        return placement
+
+    monkeypatch.setattr(controller, "_resolve_panel_placement", resolve_placement)
+    monkeypatch.setattr(controller, "_save_window_position", lambda: None)
+
+    native_commit = threading.Thread(
+        target=lambda: controller._commit_panel_placement_on_ui_thread(
+            force_default=False,
+            rendered_viewport=rendered,
+            show_after_commit=True,
+        ),
+        name="native-commit",
+    )
+    native_commit.start()
+    assert commit_resolving.wait(2)
+    hider = threading.Thread(target=controller.show_panel, name="panel-hider")
+    hider.start()
+
+    native_commit.join(2)
+    hider.join(2)
+    assert not native_commit.is_alive()
+    assert not hider.is_alive()
+
+    assert calls == ["resize", "move", "show", "hide"]
+    assert controller.visible is False
+    assert controller._panel_placement_desired_generation == 2
+    assert controller._panel_placement_pending is None
+    assert controller._panel_placement_show_pending is False
+
+
+def test_hidden_panel_rejects_show_republish_from_mismatched_native_commit(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    reconcile_started = threading.Event()
+    hide_done = threading.Event()
+    launchers: list[Callable[[], None]] = []
+    calls: list[str] = []
+    committed_viewport = PanelViewport(380, 776, 1000, True)
+    rendered = wintray._RenderedPanelViewport(
+        (1000, 0, 2000, 800),
+        committed_viewport,
+        generation=1,
+    )
+    mismatched = wintray._PanelPlacement(
+        (0, 0, 1000, 1200),
+        (100, 100),
+        PanelViewport(380, 1000, 1000, False),
+    )
+    controller = wintray._WindowsTrayController(mock=True, interval=60)
+    controller.visible = True
+    controller.window = SimpleNamespace(
+        hide=lambda: calls.append("hide"),
+        resize=lambda *_args: calls.append("resize"),
+        move=lambda *_args: calls.append("move"),
+        show=lambda: calls.append("show"),
+    )
+    with controller._panel_placement_lock:
+        controller._panel_placement_sequence = rendered.generation
+        controller._panel_placement_desired_generation = rendered.generation
+        controller._panel_placement_committed = rendered
+        controller._panel_placement_show_pending = True
+
+    monkeypatch.setattr(
+        controller,
+        "_resolve_panel_placement",
+        lambda *, force_default=False: mismatched,
+    )
+    monkeypatch.setattr(controller, "_save_window_position", lambda: None)
+    monkeypatch.setattr(
+        controller,
+        "_launch_panel_placement_worker",
+        lambda: launchers.append(controller._run_panel_placement_worker),
+    )
+    real_place_window = controller._place_window
+
+    def delayed_republish(
+        *,
+        force_default: bool = False,
+        show_after_commit: bool = False,
+    ) -> None:
+        reconcile_started.set()
+        assert hide_done.wait(2)
+        real_place_window(
+            force_default=force_default,
+            show_after_commit=show_after_commit,
+        )
+
+    monkeypatch.setattr(controller, "_place_window", delayed_republish)
+    callback = threading.Thread(
+        target=lambda: controller._commit_panel_placement_on_ui_thread(
+            force_default=False,
+            rendered_viewport=rendered,
+            show_after_commit=True,
+        ),
+        name="mismatched-native-commit",
+    )
+    callback.start()
+    assert reconcile_started.wait(2)
+
+    controller.show_panel()
+    hide_done.set()
+    callback.join(2)
+    assert not callback.is_alive()
+
+    assert calls == ["hide"]
+    assert launchers == []
+    assert controller._panel_placement_pending is None
     assert controller._panel_placement_show_pending is False
 
 
