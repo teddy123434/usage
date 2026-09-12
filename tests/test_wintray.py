@@ -1447,7 +1447,7 @@ def test_native_commit_linearizes_request_publication_before_resize_and_move(
         resolve_calls += 1
         if resolve_calls == 2:
             commit_resolving.set()
-            publisher_waiting.wait(1)
+            assert publisher_waiting.wait(2)
         return first
 
     def record_native_call(operation: str) -> None:
