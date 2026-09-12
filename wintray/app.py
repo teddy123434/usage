@@ -1195,10 +1195,9 @@ class _WindowsTrayController:
             if rendered_viewport is not None:
                 self._dispatch_window_mutation(
                     partial(
-                        self._place_window_on_ui_thread,
+                        self._commit_panel_placement_on_ui_thread,
                         force_default=request.force_default,
                         rendered_viewport=rendered_viewport,
-                        reconcile_on_mismatch=True,
                         show_after_commit=show_after_commit,
                     )
                 )
@@ -1230,6 +1229,27 @@ class _WindowsTrayController:
         viewport = fit_panel_viewport(PANEL_WIDTH, self.panel_height(), maximum)
         return _PanelPlacement(work_area, anchor, viewport)
 
+    def _commit_panel_placement_on_ui_thread(
+        self,
+        *,
+        force_default: bool,
+        rendered_viewport: _RenderedPanelViewport,
+        show_after_commit: bool,
+    ) -> None:
+        with self._panel_placement_lock:
+            if (
+                rendered_viewport.generation
+                != self._panel_placement_desired_generation
+                or rendered_viewport != self._panel_placement_committed
+            ):
+                return
+        self._place_window_on_ui_thread(
+            force_default=force_default,
+            rendered_viewport=rendered_viewport,
+            reconcile_on_mismatch=True,
+            show_after_commit=show_after_commit,
+        )
+
     def _place_window_on_ui_thread(
         self,
         *,
@@ -1247,25 +1267,20 @@ class _WindowsTrayController:
             placement.work_area != rendered_viewport.work_area
             or placement.viewport != rendered_viewport.viewport
         ):
-            newer_placement_exists = (
-                self._panel_placement_desired_generation != rendered_viewport.generation
-            )
+            with self._panel_placement_lock:
+                newer_placement_exists = (
+                    self._panel_placement_desired_generation
+                    != rendered_viewport.generation
+                )
             if (
                 reconcile_on_mismatch
                 and not newer_placement_exists
                 and not self.stopping.is_set()
             ):
-                # WebView2 JavaScript cannot run on this WinForms callback
-                # without risking a deadlock. Reconcile once off-thread so the
-                # fresh monitor receives a matching JS mode and native cap.
-                threading.Thread(
-                    target=self._place_window,
-                    kwargs={
-                        "force_default": force_default,
-                        "_reconcile_on_mismatch": False,
-                    },
-                    daemon=True,
-                ).start()
+                self._place_window(
+                    force_default=force_default,
+                    show_after_commit=show_after_commit,
+                )
             return
         viewport = (
             rendered_viewport.viewport

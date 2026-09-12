@@ -76,6 +76,18 @@ class FakeWinreg:
         return (self.value, 4)
 
 
+def _run_panel_placement_worker_inline(
+    monkeypatch: pytest.MonkeyPatch,
+    controller: wintray._WindowsTrayController,
+) -> None:
+    """Make placement completion deterministic without changing production code."""
+    monkeypatch.setattr(
+        controller,
+        "_launch_panel_placement_worker",
+        controller._run_panel_placement_worker,
+    )
+
+
 def _state() -> menubar_state.PopoverState:
     row = menubar_state.QuotaRowState(
         title="Session",
@@ -609,6 +621,7 @@ def test_content_height_message_resizes_visible_panel_with_natural_height(
     controller = wintray._WindowsTrayController(mock=True, interval=60)
     controller.visible = True
     controller.window = SimpleNamespace(x=0, y=0)
+    _run_panel_placement_worker_inline(monkeypatch, controller)
     calls: list[str] = []
     monkeypatch.setattr(controller, "_working_area", lambda: (0, 0, 1000, 800))
     monkeypatch.setattr(
@@ -617,9 +630,7 @@ def test_content_height_message_resizes_visible_panel_with_natural_height(
     monkeypatch.setattr(
         controller,
         "_place_window_on_ui_thread",
-        lambda *, force_default, rendered_viewport, reconcile_on_mismatch: calls.append(
-            "place"
-        ),
+        lambda **_kwargs: calls.append("place"),
     )
 
     controller.handle_panel_message(
@@ -666,6 +677,7 @@ def test_panel_position_is_clamped_and_persisted_on_hide(
     controller = wintray._WindowsTrayController(mock=True, interval=60)
     controller.window = window
     controller.visible = True
+    _run_panel_placement_worker_inline(monkeypatch, controller)
     monkeypatch.setattr(controller, "_working_area", lambda: (0, 0, 1000, 1080))
     monkeypatch.setattr(controller, "_work_area_for_point", lambda point: (0, 0, 1000, 1080))
 
@@ -733,6 +745,7 @@ def test_physical_saved_position_returns_to_secondary_screen_after_restart(
     controller.window = SimpleNamespace(
         x=0, y=0, resize=lambda *_args: None, move=lambda x, y: moves.append((x, y))
     )
+    _run_panel_placement_worker_inline(monkeypatch, controller)
     controller._content_height = 400
     monkeypatch.setattr(controller, "_window_dpi_scale", lambda: 1.0)
 
@@ -765,6 +778,7 @@ def test_physical_saved_position_uses_current_secondary_dpi_scale(
     controller.window = SimpleNamespace(
         x=0, y=0, resize=lambda *_args: None, move=lambda x, y: moves.append((x, y))
     )
+    _run_panel_placement_worker_inline(monkeypatch, controller)
     controller._content_height = 400
     monkeypatch.setattr(controller, "_window_dpi_scale", lambda: 2.25)
 
@@ -806,6 +820,7 @@ def test_dpi_scaled_monitor_placement_uses_logical_coordinates(
     controller.window = window
     controller._content_height = 400
     controller._positioned_this_show = True
+    _run_panel_placement_worker_inline(monkeypatch, controller)
 
     controller._place_window()
 
@@ -834,6 +849,7 @@ def test_physical_dpi_scaled_screens_are_converted_to_logical_coordinates(
         resize=lambda width, height: mutations.append(("resize", width, height)),
         move=lambda x, y: mutations.append(("move", x, y)),
     )
+    _run_panel_placement_worker_inline(monkeypatch, controller)
     controller._content_height = 400
     monkeypatch.setattr(controller, "_window_dpi_scale", lambda: 2.5)
 
@@ -866,6 +882,7 @@ def test_physical_dpi_scaled_saved_position_is_clamped_to_logical_screen(
     controller.window = SimpleNamespace(
         x=0, y=0, resize=lambda *_args: None, move=lambda x, y: moves.append((x, y))
     )
+    _run_panel_placement_worker_inline(monkeypatch, controller)
     controller._content_height = 400
     monkeypatch.setattr(controller, "_window_dpi_scale", lambda: 2.5)
 
@@ -903,6 +920,7 @@ def test_physical_dpi_scaled_screens_use_logical_height_for_panel_viewport(
         resize=lambda width, height: mutations.append(("resize", width, height)),
         move=lambda x, y: mutations.append(("move", x, y)),
     )
+    _run_panel_placement_worker_inline(monkeypatch, controller)
     controller._content_height = 1000
     monkeypatch.setattr(controller, "_window_dpi_scale", lambda: 2.5)
 
@@ -941,6 +959,7 @@ def test_high_dpi_panel_scrolls_at_fixed_scale_without_bottom_clipping(
         resize=lambda width, height: mutations.append(("resize", width, height)),
         move=lambda *_args: None,
     )
+    _run_panel_placement_worker_inline(monkeypatch, controller)
     controller._content_height = 1064
     monkeypatch.setattr(controller, "_window_dpi_scale", lambda: 2.25)
 
@@ -979,6 +998,7 @@ def test_standard_dpi_panel_scrolls_at_fixed_scale(
         resize=lambda width, height: mutations.append(("resize", width, height)),
         move=lambda *_args: None,
     )
+    _run_panel_placement_worker_inline(monkeypatch, controller)
     controller._content_height = 1064
     monkeypatch.setattr(controller, "_window_dpi_scale", lambda: 1.0)
 
@@ -1038,6 +1058,7 @@ def test_failed_panel_viewport_does_not_resize_tall_window(
     controller = wintray._WindowsTrayController(mock=True, interval=60)
     controller.window = window
     controller._content_height = 1000
+    _run_panel_placement_worker_inline(monkeypatch, controller)
     monkeypatch.setattr(controller, "_working_area", lambda: (0, 0, 1000, 800))
     monkeypatch.setattr(
         controller, "_work_area_for_point", lambda _point: (0, 0, 1000, 800)
@@ -1076,6 +1097,7 @@ def test_first_show_uses_saved_short_monitor_for_scroll_mode(
     controller.window = window
     controller._content_height = 1000
     controller._positioned_this_show = False
+    _run_panel_placement_worker_inline(monkeypatch, controller)
     primary = (0, 0, 1000, 1200)
     secondary = (1000, 0, 2000, 800)
     monkeypatch.setattr(controller, "_working_area", lambda: primary)
@@ -1113,6 +1135,7 @@ def test_forced_reset_uses_tall_primary_monitor_for_scroll_mode(
     controller.window = window
     controller._content_height = 1000
     controller._positioned_this_show = True
+    _run_panel_placement_worker_inline(monkeypatch, controller)
     primary = (0, 0, 1000, 1200)
     secondary = (1000, 0, 2000, 800)
     monkeypatch.setattr(controller, "_working_area", lambda: primary)
@@ -1153,6 +1176,7 @@ def test_background_window_mutation_is_dispatched_to_ui_thread(
         resize=lambda _width, _height: mutation_threads.append(threading.get_ident()),
         move=lambda _x, _y: mutation_threads.append(threading.get_ident()),
     )
+    _run_panel_placement_worker_inline(monkeypatch, controller)
     monkeypatch.setitem(sys.modules, "System", SimpleNamespace(Action=lambda callback: callback))
     monkeypatch.setattr(controller, "_working_area", lambda: (0, 0, 1000, 800))
     monkeypatch.setattr(
@@ -1198,6 +1222,7 @@ def test_delayed_ui_placement_uses_fresh_anchor_with_same_target_viewport(
     controller.window = window
     controller._content_height = 1000
     controller._positioned_this_show = True
+    _run_panel_placement_worker_inline(monkeypatch, controller)
     primary = (0, 0, 1000, 1200)
     secondary = (1000, 0, 2000, 800)
     monkeypatch.setitem(sys.modules, "System", SimpleNamespace(Action=lambda callback: callback))
@@ -1222,6 +1247,7 @@ def test_delayed_cross_monitor_drag_reconciles_scroll_mode_without_new_event(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     scheduled_drains: list[Callable[[], None]] = []
+    launchers: list[Callable[[], None]] = []
     javascript: list[str] = []
     mutations: list[tuple[str, int, int]] = []
     reconciled = threading.Event()
@@ -1248,6 +1274,11 @@ def test_delayed_cross_monitor_drag_reconciles_scroll_mode_without_new_event(
     controller.window = window
     controller._content_height = 1000
     controller._positioned_this_show = True
+    monkeypatch.setattr(
+        controller,
+        "_launch_panel_placement_worker",
+        lambda: launchers.append(controller._run_panel_placement_worker),
+    )
     primary = (0, 0, 1000, 1200)
     secondary = (1000, 0, 2000, 800)
     monkeypatch.setitem(sys.modules, "System", SimpleNamespace(Action=lambda callback: callback))
@@ -1258,12 +1289,20 @@ def test_delayed_cross_monitor_drag_reconciles_scroll_mode_without_new_event(
         lambda point: secondary if point is not None and point[0] >= 1000 else primary,
     )
 
-    worker = threading.Thread(target=controller._place_window)
+    controller._place_window()
+    assert len(launchers) == 1
+    worker = threading.Thread(target=launchers.pop(), name="placement-worker")
     worker.start()
     worker.join()
     window.x, window.y = 100, 100
     scheduled_drains.pop(0)()
-    assert reconciled.wait(2)
+    assert len(launchers) == 1
+    reconciliation_worker = threading.Thread(
+        target=launchers.pop(), name="placement-reconciliation-worker"
+    )
+    reconciliation_worker.start()
+    reconciliation_worker.join()
+    assert reconciled.is_set()
     while scheduled_drains:
         scheduled_drains.pop(0)()
 
@@ -1369,6 +1408,68 @@ def test_newer_request_supersedes_old_applied_viewport_before_native_publish(
     assert applied_modes == [True, False]
     assert native_viewports == [newest_rendered]
     assert controller._panel_placement_committed == newest_rendered
+
+
+def test_newer_request_at_dispatch_boundary_cannot_reach_native_mutation(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    old_dispatch_started = threading.Event()
+    release_old_dispatch = threading.Event()
+    launchers: list[Callable[[], None]] = []
+    native_generations: list[int] = []
+
+    first = wintray._PanelPlacement(
+        (1000, 0, 2000, 800),
+        (1200, 100),
+        PanelViewport(380, 776, 1000, True),
+    )
+    newest = wintray._PanelPlacement(
+        (0, 0, 1000, 1200),
+        (100, 100),
+        PanelViewport(380, 1000, 1000, False),
+    )
+    placements = iter((first, newest))
+    controller = wintray._WindowsTrayController(mock=True, interval=60)
+    controller.window = SimpleNamespace(evaluate_js=lambda _code: "applied")
+
+    def dispatch_at_controlled_boundary(callback: Callable[[], None]) -> None:
+        if not old_dispatch_started.is_set():
+            old_dispatch_started.set()
+            assert release_old_dispatch.wait(5)
+        callback()
+
+    def record_native_mutation(
+        *,
+        rendered_viewport: wintray._RenderedPanelViewport | None = None,
+        **_kwargs: object,
+    ) -> None:
+        assert rendered_viewport is not None
+        native_generations.append(rendered_viewport.generation)
+
+    monkeypatch.setattr(
+        controller,
+        "_resolve_panel_placement",
+        lambda *, force_default=False: next(placements),
+    )
+    monkeypatch.setattr(controller, "_dispatch_window_mutation", dispatch_at_controlled_boundary)
+    monkeypatch.setattr(controller, "_place_window_on_ui_thread", record_native_mutation)
+    monkeypatch.setattr(
+        controller,
+        "_launch_panel_placement_worker",
+        lambda: launchers.append(controller._run_panel_placement_worker),
+    )
+
+    controller._place_window()
+    worker = threading.Thread(target=launchers[0], name="placement-worker")
+    worker.start()
+    assert old_dispatch_started.wait(2)
+
+    controller._place_window()
+    release_old_dispatch.set()
+    worker.join(2)
+    assert not worker.is_alive()
+
+    assert native_generations == [2]
 
 
 def test_placement_worker_coalesces_burst_to_newest_pending_request(
@@ -1626,6 +1727,7 @@ def test_switch_panel_keeps_dragged_position_before_new_height_is_measured(
     controller.window = window
     controller.visible = True
     controller.active_panel_id = "world_cup"
+    _run_panel_placement_worker_inline(monkeypatch, controller)
     monkeypatch.setattr(controller, "_working_area", lambda: (0, 0, 1920, 1080))
     monkeypatch.setattr(controller, "_work_area_for_point", lambda point: (0, 0, 1920, 1080))
 
@@ -1676,6 +1778,7 @@ def test_switch_panel_keeps_dragged_position_on_secondary_monitor(
     controller.window = window
     controller.visible = True
     controller.active_panel_id = "world_cup"
+    _run_panel_placement_worker_inline(monkeypatch, controller)
     monkeypatch.setattr(controller, "_working_area", lambda: primary)
     monkeypatch.setattr(controller, "_work_area_for_point", work_area_for_point)
 
@@ -2330,6 +2433,7 @@ def test_show_panel_queues_show_after_placement_on_ui_thread(
         move=lambda *_args: calls.append("move"),
         show=lambda: calls.append("show"),
     )
+    _run_panel_placement_worker_inline(monkeypatch, controller)
     monkeypatch.setitem(sys.modules, "System", SimpleNamespace(Action=lambda callback: callback))
     monkeypatch.setattr(controller, "_window_dpi_scale", lambda: None)
     monkeypatch.setattr(controller, "_working_area", lambda: (0, 0, 1000, 800))
@@ -2363,6 +2467,7 @@ def test_queued_show_panel_does_not_show_after_being_hidden(
         move=lambda *_args: calls.append("move"),
         show=lambda: calls.append("show"),
     )
+    _run_panel_placement_worker_inline(monkeypatch, controller)
     monkeypatch.setitem(sys.modules, "System", SimpleNamespace(Action=lambda callback: callback))
     monkeypatch.setattr(controller, "_window_dpi_scale", lambda: None)
     monkeypatch.setattr(controller, "_working_area", lambda: (0, 0, 1000, 800))
