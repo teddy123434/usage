@@ -1199,6 +1199,7 @@ def test_delayed_ui_placement_uses_fresh_anchor_with_same_target_viewport(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     scheduled_drains: list[Callable[[], None]] = []
+    launchers: list[Callable[[], None]] = []
     javascript: list[str] = []
     mutations: list[tuple[str, int, int]] = []
     native = SimpleNamespace(
@@ -1222,7 +1223,11 @@ def test_delayed_ui_placement_uses_fresh_anchor_with_same_target_viewport(
     controller.window = window
     controller._content_height = 1000
     controller._positioned_this_show = True
-    _run_panel_placement_worker_inline(monkeypatch, controller)
+    monkeypatch.setattr(
+        controller,
+        "_launch_panel_placement_worker",
+        lambda: launchers.append(controller._run_panel_placement_worker),
+    )
     primary = (0, 0, 1000, 1200)
     secondary = (1000, 0, 2000, 800)
     monkeypatch.setitem(sys.modules, "System", SimpleNamespace(Action=lambda callback: callback))
@@ -1233,9 +1238,12 @@ def test_delayed_ui_placement_uses_fresh_anchor_with_same_target_viewport(
         lambda point: secondary if point is not None and point[0] >= 1000 else primary,
     )
 
-    worker = threading.Thread(target=controller._place_window)
+    controller._place_window()
+    assert len(launchers) == 1
+    worker = threading.Thread(target=launchers.pop(), name="placement-worker")
     worker.start()
     worker.join()
+    assert not worker.is_alive()
     window.x, window.y = 1400, 100
     scheduled_drains.pop()()
 
@@ -1294,8 +1302,10 @@ def test_delayed_cross_monitor_drag_reconciles_scroll_mode_without_new_event(
     worker = threading.Thread(target=launchers.pop(), name="placement-worker")
     worker.start()
     worker.join()
+    assert not worker.is_alive()
     window.x, window.y = 100, 100
     scheduled_drains.pop(0)()
+    assert mutations == []
     assert len(launchers) == 1
     reconciliation_worker = threading.Thread(
         target=launchers.pop(), name="placement-reconciliation-worker"
@@ -1310,6 +1320,34 @@ def test_delayed_cross_monitor_drag_reconciles_scroll_mode_without_new_event(
     assert "usageApplyPanelViewport(false)" in javascript[1]
     assert len(javascript) == 2
     assert mutations == [("resize", 380, 1000), ("move", 100, 100)]
+
+
+def test_native_commit_rejects_old_generation_even_when_viewport_matches_again(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    mutations: list[tuple[str, int, int]] = []
+    work_area = (1000, 0, 2000, 800)
+    viewport = PanelViewport(380, 776, 1000, True)
+    placement = wintray._PanelPlacement(work_area, (1400, 100), viewport)
+    old_rendered = wintray._RenderedPanelViewport(work_area, viewport, generation=1)
+    current_rendered = wintray._RenderedPanelViewport(work_area, viewport, generation=2)
+    controller = wintray._WindowsTrayController(mock=True, interval=60)
+    controller.window = SimpleNamespace(
+        resize=lambda width, height: mutations.append(("resize", width, height)),
+        move=lambda x, y: mutations.append(("move", x, y)),
+    )
+    monkeypatch.setattr(
+        controller,
+        "_resolve_panel_placement",
+        lambda *, force_default=False: placement,
+    )
+    with controller._panel_placement_lock:
+        controller._panel_placement_desired_generation = current_rendered.generation
+        controller._panel_placement_committed = current_rendered
+
+    controller._place_window_on_ui_thread(rendered_viewport=old_rendered)
+
+    assert mutations == []
 
 
 def test_newer_request_supersedes_old_applied_viewport_before_native_publish(
@@ -2421,12 +2459,16 @@ def test_on_loaded_does_not_place_hidden_window() -> None:
     assert calls == []
 
 
-def test_show_panel_places_window_before_showing(
+def test_show_panel_requests_show_after_committed_placement(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     controller = wintray._WindowsTrayController(mock=True, interval=60)
     calls: list[str] = []
-    monkeypatch.setattr(controller, "_place_window", lambda: calls.append("place"))
+    monkeypatch.setattr(
+        controller,
+        "_place_window",
+        lambda *, show_after_commit=False: calls.append(f"place:{show_after_commit}"),
+    )
     monkeypatch.setattr(
         controller, "inject_state", lambda *, force=False: calls.append(f"inject:{force}")
     )
@@ -2438,7 +2480,94 @@ def test_show_panel_places_window_before_showing(
     controller.show_panel()
 
     assert controller.visible is True
-    assert calls == ["place", "show", "inject:True", "refresh"]
+    assert calls == ["place:True", "inject:True", "refresh"]
+
+
+def test_show_request_survives_placement_coalescing(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    callbacks: list[Callable[[], None]] = []
+    launchers: list[Callable[[], None]] = []
+    calls: list[str] = []
+    controller = wintray._WindowsTrayController(mock=True, interval=60)
+    controller.window = SimpleNamespace(
+        x=0,
+        y=0,
+        evaluate_js=lambda _code: "applied",
+        resize=lambda *_args: calls.append("resize"),
+        move=lambda *_args: calls.append("move"),
+        show=lambda: calls.append("show"),
+    )
+    monkeypatch.setattr(controller, "_working_area", lambda: (0, 0, 1000, 800))
+    monkeypatch.setattr(
+        controller, "_work_area_for_point", lambda _point: (0, 0, 1000, 800)
+    )
+    monkeypatch.setattr(controller, "_dispatch_window_mutation", callbacks.append)
+    monkeypatch.setattr(
+        controller,
+        "_launch_panel_placement_worker",
+        lambda: launchers.append(controller._run_panel_placement_worker),
+    )
+    monkeypatch.setattr(controller, "_update_taskbar_progress", lambda _percent: None)
+    monkeypatch.setattr(controller, "inject_state", lambda *, force=False: None)
+    monkeypatch.setattr(controller, "refresh", lambda: None)
+
+    controller.show_panel()
+    controller._apply_content_height_now(1000)
+    assert len(launchers) == 1
+    launchers.pop()()
+    while callbacks:
+        callbacks.pop(0)()
+
+    assert calls == ["resize", "move", "show"]
+    assert controller._panel_placement_show_pending is False
+
+
+def test_first_show_waits_for_loaded_viewport_before_becoming_visible(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    callbacks: list[Callable[[], None]] = []
+    launchers: list[Callable[[], None]] = []
+    calls: list[str] = []
+    apply_results = iter(("unavailable", "applied"))
+    controller = wintray._WindowsTrayController(mock=True, interval=60)
+    controller.window = SimpleNamespace(
+        x=0,
+        y=0,
+        evaluate_js=lambda _code: next(apply_results),
+        resize=lambda *_args: calls.append("resize"),
+        move=lambda *_args: calls.append("move"),
+        show=lambda: calls.append("show"),
+    )
+    monkeypatch.setattr(controller, "_working_area", lambda: (0, 0, 1000, 800))
+    monkeypatch.setattr(
+        controller, "_work_area_for_point", lambda _point: (0, 0, 1000, 800)
+    )
+    monkeypatch.setattr(controller, "_dispatch_window_mutation", callbacks.append)
+    monkeypatch.setattr(
+        controller,
+        "_launch_panel_placement_worker",
+        lambda: launchers.append(controller._run_panel_placement_worker),
+    )
+    monkeypatch.setattr(controller, "_update_taskbar_progress", lambda _percent: None)
+    monkeypatch.setattr(controller, "inject_state", lambda *, force=False: None)
+    monkeypatch.setattr(controller, "refresh", lambda: None)
+
+    controller.show_panel()
+    launchers.pop()()
+    while callbacks:
+        callbacks.pop(0)()
+
+    assert calls == []
+    assert controller._panel_placement_show_pending is True
+
+    controller.on_loaded()
+    launchers.pop()()
+    while callbacks:
+        callbacks.pop(0)()
+
+    assert calls == ["resize", "move", "show"]
+    assert controller._panel_placement_show_pending is False
 
 
 def test_show_panel_queues_show_after_placement_on_ui_thread(
@@ -2493,6 +2622,7 @@ def test_queued_show_panel_does_not_show_after_being_hidden(
         resize=lambda *_args: calls.append("resize"),
         move=lambda *_args: calls.append("move"),
         show=lambda: calls.append("show"),
+        hide=lambda: calls.append("hide"),
     )
     _run_panel_placement_worker_inline(monkeypatch, controller)
     monkeypatch.setitem(sys.modules, "System", SimpleNamespace(Action=lambda callback: callback))
@@ -2501,12 +2631,14 @@ def test_queued_show_panel_does_not_show_after_being_hidden(
     monkeypatch.setattr(controller, "_work_area_for_point", lambda _point: (0, 0, 1000, 800))
     monkeypatch.setattr(controller, "inject_state", lambda *, force=False: None)
     monkeypatch.setattr(controller, "refresh", lambda: None)
+    monkeypatch.setattr(controller, "_save_window_position", lambda: None)
 
     controller.show_panel()
-    controller.visible = False
+    controller.show_panel()
     callbacks.pop()()
 
-    assert calls == ["resize", "move"]
+    assert calls == ["hide", "resize", "move"]
+    assert controller._panel_placement_show_pending is False
 
 
 def test_attach_schedules_startup_maintenance_after_tray_is_visible(
@@ -2884,7 +3016,7 @@ def test_inject_state_skips_duplicate_but_forces_after_panel_reopens(
         show=lambda: None,
         hide=lambda: None,
     )
-    monkeypatch.setattr(controller, "_place_window", lambda: None)
+    monkeypatch.setattr(controller, "_place_window", lambda **_kwargs: None)
     monkeypatch.setattr(controller, "refresh", lambda: None)
     monkeypatch.setattr(wintray, "_system_accent_color", lambda: "#0078d7")
 

@@ -1255,6 +1255,7 @@ class _WindowsTrayController:
             reconcile = self._place_window_on_ui_thread(
                 force_default=force_default,
                 rendered_viewport=rendered_viewport,
+                show_after_commit=show_after_commit,
             )
         if reconcile and not self.stopping.is_set():
             self._place_window(
@@ -1267,9 +1268,18 @@ class _WindowsTrayController:
         *,
         force_default: bool = False,
         rendered_viewport: _RenderedPanelViewport | None = None,
+        show_after_commit: bool = False,
     ) -> bool:
         if self.window is None or self.stopping.is_set():
             return False
+        if rendered_viewport is not None:
+            with self._panel_placement_lock:
+                if (
+                    rendered_viewport.generation
+                    != self._panel_placement_desired_generation
+                    or rendered_viewport != self._panel_placement_committed
+                ):
+                    return False
         placement = self._resolve_panel_placement(force_default=force_default)
         if placement is None:
             return False
@@ -1295,6 +1305,10 @@ class _WindowsTrayController:
             *self._clamp_window_position(position, placement.work_area, width, height)
         )
         self._positioned_this_show = True
+        if show_after_commit:
+            self._show_panel_on_ui_thread()
+            with self._panel_placement_lock:
+                self._panel_placement_show_pending = False
         return False
 
     def _dispatch_window_mutation(self, mutation: Callable[[], None]) -> None:
@@ -1739,11 +1753,12 @@ class _WindowsTrayController:
             self._save_window_position()
             self.visible = False
             self._positioned_this_show = False
+            with self._panel_placement_lock:
+                self._panel_placement_show_pending = False
             self.window.hide()
             return
         self.visible = True
-        self._place_window()
-        self._dispatch_window_mutation(self._show_panel_on_ui_thread)
+        self._place_window(show_after_commit=True)
         self._update_taskbar_progress(self.latest_state.claude_session.percent)
         self.inject_state(force=True)
         self.refresh()
