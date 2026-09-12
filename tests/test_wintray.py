@@ -2563,15 +2563,46 @@ def test_show_panel_requests_show_after_committed_placement(
 ) -> None:
     controller = wintray._WindowsTrayController(mock=True, interval=60)
     calls: list[str] = []
+
+    class ObservedNativeCommitLock:
+        def __init__(self) -> None:
+            self._lock = threading.RLock()
+            self._depth = threading.local()
+
+        def __enter__(self) -> None:
+            self._lock.acquire()
+            self._depth.value = getattr(self._depth, "value", 0) + 1
+
+        def __exit__(self, *_args: object) -> None:
+            self._depth.value -= 1
+            self._lock.release()
+
+        def assert_not_held(self) -> None:
+            assert not getattr(self._depth, "value", 0)
+
+    native_gate = ObservedNativeCommitLock()
+    controller.__dict__["_panel_native_commit_lock"] = native_gate
+
+    def record_external_call(call: str) -> None:
+        native_gate.assert_not_held()
+        calls.append(call)
+
     monkeypatch.setattr(
         controller,
-        "_place_window",
-        lambda *, show_after_commit=False: calls.append(f"place:{show_after_commit}"),
+        "_launch_panel_placement_worker",
+        lambda: record_external_call("launch"),
     )
     monkeypatch.setattr(
-        controller, "inject_state", lambda *, force=False: calls.append(f"inject:{force}")
+        controller,
+        "_update_taskbar_progress",
+        lambda _percent: record_external_call("taskbar"),
     )
-    monkeypatch.setattr(controller, "refresh", lambda: calls.append("refresh"))
+    monkeypatch.setattr(
+        controller,
+        "inject_state",
+        lambda *, force=False: record_external_call(f"inject:{force}"),
+    )
+    monkeypatch.setattr(controller, "refresh", lambda: record_external_call("refresh"))
     controller.window = SimpleNamespace(
         show=lambda: calls.append("show"), hide=lambda: calls.append("hide")
     )
@@ -2579,7 +2610,12 @@ def test_show_panel_requests_show_after_committed_placement(
     controller.show_panel()
 
     assert controller.visible is True
-    assert calls == ["place:True", "inject:True", "refresh"]
+    assert calls == ["launch", "taskbar", "inject:True", "refresh"]
+    with controller._panel_placement_lock:
+        request = controller._panel_placement_pending
+        assert request is not None
+        assert request.show_after_commit is True
+        assert controller._panel_placement_show_pending is True
 
 
 def test_show_request_survives_placement_coalescing(
@@ -2937,6 +2973,170 @@ def test_hidden_panel_rejects_show_republish_from_mismatched_native_commit(
     assert launchers == []
     assert controller._panel_placement_pending is None
     assert controller._panel_placement_show_pending is False
+
+
+def test_activation_cannot_show_before_opening_publishes_placement_intent(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    opener_entered_gate = threading.Event()
+    allow_opener_to_enter = threading.Event()
+    calls: list[str] = []
+    launchers: list[Callable[[], None]] = []
+
+    class PausingNativeCommitLock:
+        def __init__(self) -> None:
+            self._lock = threading.RLock()
+
+        def __enter__(self) -> None:
+            if threading.current_thread().name == "panel-opener":
+                opener_entered_gate.set()
+                assert allow_opener_to_enter.wait(2)
+            self._lock.acquire()
+
+        def __exit__(self, *_args: object) -> None:
+            self._lock.release()
+
+    controller = wintray._WindowsTrayController(mock=True, interval=60)
+    controller.__dict__["_panel_native_commit_lock"] = PausingNativeCommitLock()
+    controller.window = SimpleNamespace(
+        show=lambda: calls.append("show"),
+        hide=lambda: calls.append("hide"),
+    )
+    rendered = wintray._RenderedPanelViewport(
+        (0, 0, 1000, 800),
+        PanelViewport(380, 776, 1000, True),
+        generation=1,
+    )
+    with controller._panel_placement_lock:
+        controller._panel_placement_sequence = rendered.generation
+        controller._panel_placement_desired_generation = rendered.generation
+        controller._panel_placement_committed = rendered
+    monkeypatch.setattr(
+        controller,
+        "_launch_panel_placement_worker",
+        lambda: launchers.append(controller._run_panel_placement_worker),
+    )
+    monkeypatch.setattr(controller, "_update_taskbar_progress", lambda _percent: None)
+    monkeypatch.setattr(controller, "inject_state", lambda *, force=False: None)
+    monkeypatch.setattr(controller, "refresh", lambda: None)
+    monkeypatch.setattr(controller, "_save_window_position", lambda: None)
+
+    opener = threading.Thread(target=controller.show_panel, name="panel-opener")
+    opener.start()
+    assert opener_entered_gate.wait(2)
+
+    activation = threading.Thread(
+        target=controller._activate_panel,
+        name="panel-activation",
+    )
+    activation.start()
+    activation.join(2)
+    assert not activation.is_alive()
+
+    calls_before_publication = list(calls)
+    with controller._panel_placement_lock:
+        request_before_publication = controller._panel_placement_pending
+        show_pending_before_publication = controller._panel_placement_show_pending
+
+    allow_opener_to_enter.set()
+    opener.join(2)
+    assert not opener.is_alive()
+
+    assert calls_before_publication == []
+    assert request_before_publication is not None
+    assert request_before_publication.show_after_commit is True
+    assert show_pending_before_publication is True
+    assert launchers == [controller._run_panel_placement_worker]
+
+
+def test_hidden_activation_cannot_reopen_after_intervening_explicit_hide(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    activation_left_gate = threading.Event()
+    allow_activation_to_continue = threading.Event()
+    callbacks: list[Callable[[], None]] = []
+    launchers: list[Callable[[], None]] = []
+    calls: list[str] = []
+    native_visible = [False]
+
+    class PausingActivationExitLock:
+        def __init__(self) -> None:
+            self._lock = threading.RLock()
+            self._paused_activation = False
+
+        def __enter__(self) -> None:
+            self._lock.acquire()
+
+        def __exit__(self, *_args: object) -> None:
+            self._lock.release()
+            if (
+                threading.current_thread().name == "hidden-panel-activation"
+                and not self._paused_activation
+            ):
+                self._paused_activation = True
+                activation_left_gate.set()
+                assert allow_activation_to_continue.wait(2)
+
+    controller = wintray._WindowsTrayController(mock=True, interval=60)
+    controller.__dict__["_panel_native_commit_lock"] = PausingActivationExitLock()
+
+    def show() -> None:
+        native_visible[0] = True
+        calls.append("show")
+
+    def hide() -> None:
+        native_visible[0] = False
+        calls.append("hide")
+
+    controller.window = SimpleNamespace(
+        x=0,
+        y=0,
+        evaluate_js=lambda _code: "applied",
+        resize=lambda *_args: calls.append("resize"),
+        move=lambda *_args: calls.append("move"),
+        show=show,
+        hide=hide,
+    )
+    monkeypatch.setattr(controller, "_working_area", lambda: (0, 0, 1000, 800))
+    monkeypatch.setattr(
+        controller, "_work_area_for_point", lambda _point: (0, 0, 1000, 800)
+    )
+    monkeypatch.setattr(controller, "_dispatch_window_mutation", callbacks.append)
+    monkeypatch.setattr(
+        controller,
+        "_launch_panel_placement_worker",
+        lambda: launchers.append(controller._run_panel_placement_worker),
+    )
+    monkeypatch.setattr(controller, "_update_taskbar_progress", lambda _percent: None)
+    monkeypatch.setattr(controller, "inject_state", lambda *, force=False: None)
+    monkeypatch.setattr(controller, "refresh", lambda: None)
+    monkeypatch.setattr(controller, "_save_window_position", lambda: None)
+
+    activation = threading.Thread(
+        target=controller._activate_panel,
+        name="hidden-panel-activation",
+    )
+    activation.start()
+    assert activation_left_gate.wait(2)
+
+    if not controller.visible:
+        controller.show_panel()
+    assert controller.visible is True
+    controller.show_panel()
+    assert controller.visible is False
+
+    allow_activation_to_continue.set()
+    activation.join(2)
+    assert not activation.is_alive()
+
+    assert launchers == [controller._run_panel_placement_worker]
+    launchers.pop()()
+    while callbacks:
+        callbacks.pop(0)()
+
+    assert calls == ["hide"]
+    assert native_visible == [False]
+    assert controller.visible is False
 
 
 def test_activation_native_show_finishes_before_explicit_hide(

@@ -1134,23 +1134,35 @@ class _WindowsTrayController:
         with self._panel_native_commit_lock:
             if self.stopping.is_set() or not self.visible:
                 return
-            with self._panel_placement_lock:
-                self._panel_placement_sequence += 1
-                generation = self._panel_placement_sequence
-                request = _PanelPlacementRequest(
-                    generation=generation,
-                    force_default=force_default,
-                    show_after_commit=show_after_commit,
-                )
-                self._panel_placement_pending = request
-                self._panel_placement_desired_generation = generation
-                if show_after_commit:
-                    self._panel_placement_show_pending = True
-                if not self._panel_placement_worker_running:
-                    self._panel_placement_worker_running = True
-                    launch_worker = True
+            launch_worker = self._publish_panel_placement_request_locked(
+                force_default=force_default,
+                show_after_commit=show_after_commit,
+            )
         if launch_worker:
             self._launch_panel_placement_worker()
+
+    def _publish_panel_placement_request_locked(
+        self,
+        *,
+        force_default: bool = False,
+        show_after_commit: bool = False,
+    ) -> bool:
+        """Publish placement state while the native commit gate is held."""
+        with self._panel_placement_lock:
+            self._panel_placement_sequence += 1
+            generation = self._panel_placement_sequence
+            self._panel_placement_pending = _PanelPlacementRequest(
+                generation=generation,
+                force_default=force_default,
+                show_after_commit=show_after_commit,
+            )
+            self._panel_placement_desired_generation = generation
+            if show_after_commit:
+                self._panel_placement_show_pending = True
+            if self._panel_placement_worker_running:
+                return False
+            self._panel_placement_worker_running = True
+            return True
 
     def _launch_panel_placement_worker(self) -> None:
         threading.Thread(
@@ -1763,9 +1775,12 @@ class _WindowsTrayController:
     def show_panel(self, _icon: Any = None, _item: Any = None) -> None:
         if self.stopping.is_set():
             return
-        if self.visible:
-            self._save_window_position()
-            with self._panel_native_commit_lock:
+        launch_worker = False
+        with self._panel_native_commit_lock:
+            if self.stopping.is_set():
+                return
+            if self.visible:
+                self._save_window_position()
                 self.visible = False
                 self._positioned_this_show = False
                 with self._panel_placement_lock:
@@ -1776,9 +1791,13 @@ class _WindowsTrayController:
                     self._panel_placement_pending = None
                     self._panel_placement_show_pending = False
                 self.window.hide()
-            return
-        self.visible = True
-        self._place_window(show_after_commit=True)
+                return
+            self.visible = True
+            launch_worker = self._publish_panel_placement_request_locked(
+                show_after_commit=True
+            )
+        if launch_worker:
+            self._launch_panel_placement_worker()
         self._update_taskbar_progress(self.latest_state.claude_session.percent)
         self.inject_state(force=True)
         self.refresh()
@@ -1790,11 +1809,16 @@ class _WindowsTrayController:
     def _activate_panel(self) -> None:
         """Show or foreground the existing tray panel without toggling it closed."""
         open_hidden_panel = False
+        launch_worker = False
         request_placement = False
         with self._panel_native_commit_lock:
             if self.window is None or self.stopping.is_set():
                 return
             if not self.visible:
+                self.visible = True
+                launch_worker = self._publish_panel_placement_request_locked(
+                    show_after_commit=True
+                )
                 open_hidden_panel = True
             else:
                 with self._panel_placement_lock:
@@ -1805,8 +1829,12 @@ class _WindowsTrayController:
                 if not request_placement:
                     self.window.show()
 
+        if launch_worker:
+            self._launch_panel_placement_worker()
         if open_hidden_panel:
-            self.show_panel()
+            self._update_taskbar_progress(self.latest_state.claude_session.percent)
+            self.inject_state(force=True)
+            self.refresh()
         elif request_placement:
             self._place_window(show_after_commit=True)
 
