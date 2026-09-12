@@ -2939,6 +2939,169 @@ def test_hidden_panel_rejects_show_republish_from_mismatched_native_commit(
     assert controller._panel_placement_show_pending is False
 
 
+def test_activation_native_show_finishes_before_explicit_hide(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    show_started = threading.Event()
+    allow_show_return = threading.Event()
+    hider_waiting = threading.Event()
+    hider_acquired = threading.Event()
+    hide_done = threading.Event()
+    calls: list[str] = []
+    native_visible = [False]
+
+    class ObservedNativeCommitLock:
+        def __init__(self) -> None:
+            self._lock = threading.RLock()
+
+        def __enter__(self) -> None:
+            if threading.current_thread().name == "panel-hider":
+                hider_waiting.set()
+            self._lock.acquire()
+            if threading.current_thread().name == "panel-hider":
+                hider_acquired.set()
+
+        def __exit__(self, *_args: object) -> None:
+            self._lock.release()
+
+    viewport = PanelViewport(380, 776, 1000, True)
+    rendered = wintray._RenderedPanelViewport(
+        (0, 0, 1000, 800),
+        viewport,
+        generation=1,
+    )
+    controller = wintray._WindowsTrayController(mock=True, interval=60)
+    controller.visible = True
+    controller.__dict__["_panel_native_commit_lock"] = ObservedNativeCommitLock()
+
+    def show() -> None:
+        show_started.set()
+        assert allow_show_return.wait(2)
+        native_visible[0] = True
+        calls.append("show")
+
+    def hide() -> None:
+        native_visible[0] = False
+        calls.append("hide")
+        hide_done.set()
+
+    controller.window = SimpleNamespace(show=show, hide=hide)
+    with controller._panel_placement_lock:
+        controller._panel_placement_sequence = rendered.generation
+        controller._panel_placement_desired_generation = rendered.generation
+        controller._panel_placement_committed = rendered
+    monkeypatch.setattr(controller, "_save_window_position", lambda: None)
+
+    activation = threading.Thread(
+        target=controller._activate_panel,
+        name="panel-activation",
+    )
+    activation.start()
+    assert show_started.wait(2)
+    hider = threading.Thread(target=controller.show_panel, name="panel-hider")
+    hider.start()
+    assert hider_waiting.wait(2)
+
+    if hider_acquired.wait(0.2):
+        assert hide_done.wait(2)
+    allow_show_return.set()
+
+    activation.join(2)
+    hider.join(2)
+    assert not activation.is_alive()
+    assert not hider.is_alive()
+
+    assert calls == ["show", "hide"]
+    assert native_visible == [False]
+    assert controller.visible is False
+
+
+@pytest.mark.parametrize(
+    ("show_pending", "has_committed_viewport"),
+    [(True, True), (False, False)],
+    ids=["pending-show", "uncommitted-viewport"],
+)
+def test_pending_first_show_activation_requests_coordinated_placement(
+    monkeypatch: pytest.MonkeyPatch,
+    show_pending: bool,
+    has_committed_viewport: bool,
+) -> None:
+    placement_requested = threading.Event()
+    launchers: list[Callable[[], None]] = []
+    calls: list[str] = []
+
+    class ObservedNativeCommitLock:
+        def __init__(self) -> None:
+            self._lock = threading.RLock()
+            self._depth = threading.local()
+
+        def __enter__(self) -> None:
+            self._lock.acquire()
+            self._depth.value = getattr(self._depth, "value", 0) + 1
+
+        def __exit__(self, *_args: object) -> None:
+            self._depth.value -= 1
+            self._lock.release()
+
+        def held_by_current_thread(self) -> bool:
+            return bool(getattr(self._depth, "value", 0))
+
+    controller = wintray._WindowsTrayController(mock=True, interval=60)
+    controller.visible = True
+    native_gate = ObservedNativeCommitLock()
+    controller.__dict__["_panel_native_commit_lock"] = native_gate
+    controller.window = SimpleNamespace(show=lambda: calls.append("show"))
+    rendered = wintray._RenderedPanelViewport(
+        (0, 0, 1000, 800),
+        PanelViewport(380, 776, 1000, True),
+        generation=1,
+    )
+    with controller._panel_placement_lock:
+        controller._panel_placement_sequence = rendered.generation
+        controller._panel_placement_desired_generation = rendered.generation
+        controller._panel_placement_show_pending = show_pending
+        controller._panel_placement_committed = (
+            rendered if has_committed_viewport else None
+        )
+
+    def capture_launcher() -> None:
+        launchers.append(controller._run_panel_placement_worker)
+        placement_requested.set()
+
+    real_place_window = controller._place_window
+
+    def request_placement(
+        *,
+        force_default: bool = False,
+        show_after_commit: bool = False,
+    ) -> None:
+        assert not native_gate.held_by_current_thread()
+        real_place_window(
+            force_default=force_default,
+            show_after_commit=show_after_commit,
+        )
+
+    monkeypatch.setattr(controller, "_launch_panel_placement_worker", capture_launcher)
+    monkeypatch.setattr(controller, "_place_window", request_placement)
+
+    activation = threading.Thread(
+        target=controller._activate_panel,
+        name="pending-first-show-activation",
+    )
+    activation.start()
+    activation.join(2)
+    assert not activation.is_alive()
+
+    assert placement_requested.wait(2)
+    assert calls == []
+    assert launchers == [controller._run_panel_placement_worker]
+    with controller._panel_placement_lock:
+        request = controller._panel_placement_pending
+        assert request is not None
+        assert request.show_after_commit is True
+        assert controller._panel_placement_show_pending is True
+
+
 def test_attach_schedules_startup_maintenance_after_tray_is_visible(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

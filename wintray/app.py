@@ -1789,12 +1789,26 @@ class _WindowsTrayController:
 
     def _activate_panel(self) -> None:
         """Show or foreground the existing tray panel without toggling it closed."""
-        if self.window is None:
-            return
-        if not self.visible:
+        open_hidden_panel = False
+        request_placement = False
+        with self._panel_native_commit_lock:
+            if self.window is None or self.stopping.is_set():
+                return
+            if not self.visible:
+                open_hidden_panel = True
+            else:
+                with self._panel_placement_lock:
+                    request_placement = (
+                        self._panel_placement_show_pending
+                        or self._panel_placement_committed is None
+                    )
+                if not request_placement:
+                    self.window.show()
+
+        if open_hidden_panel:
             self.show_panel()
-            return
-        self.window.show()
+        elif request_placement:
+            self._place_window(show_after_commit=True)
 
     def switch_panel(self, panel_id: str) -> None:
         self.active_panel_id = panel_id
