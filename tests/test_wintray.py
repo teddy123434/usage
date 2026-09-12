@@ -1410,49 +1410,64 @@ def test_newer_request_supersedes_old_applied_viewport_before_native_publish(
     assert controller._panel_placement_committed == newest_rendered
 
 
-def test_newer_request_at_dispatch_boundary_cannot_reach_native_mutation(
+def test_native_commit_linearizes_request_publication_before_resize_and_move(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    old_dispatch_started = threading.Event()
-    release_old_dispatch = threading.Event()
+    commit_resolving = threading.Event()
+    publisher_waiting = threading.Event()
+    publisher_done = threading.Event()
+    callbacks: list[Callable[[], None]] = []
     launchers: list[Callable[[], None]] = []
-    native_generations: list[int] = []
+    native_calls: list[tuple[str, int]] = []
+
+    class ObservedNativeCommitLock:
+        def __init__(self) -> None:
+            self._lock = threading.Lock()
+
+        def __enter__(self) -> None:
+            if threading.current_thread().name == "request-publisher":
+                publisher_waiting.set()
+            self._lock.acquire()
+
+        def __exit__(self, *_args: object) -> None:
+            self._lock.release()
 
     first = wintray._PanelPlacement(
         (1000, 0, 2000, 800),
         (1200, 100),
         PanelViewport(380, 776, 1000, True),
     )
-    newest = wintray._PanelPlacement(
-        (0, 0, 1000, 1200),
-        (100, 100),
-        PanelViewport(380, 1000, 1000, False),
-    )
-    placements = iter((first, newest))
     controller = wintray._WindowsTrayController(mock=True, interval=60)
-    controller.window = SimpleNamespace(evaluate_js=lambda _code: "applied")
+    controller.__dict__["_panel_native_commit_lock"] = ObservedNativeCommitLock()
+    resolve_calls = 0
 
-    def dispatch_at_controlled_boundary(callback: Callable[[], None]) -> None:
-        if not old_dispatch_started.is_set():
-            old_dispatch_started.set()
-            assert release_old_dispatch.wait(5)
-        callback()
+    def resolve_placement(*, force_default: bool = False) -> wintray._PanelPlacement:
+        nonlocal resolve_calls
+        del force_default
+        resolve_calls += 1
+        if resolve_calls == 2:
+            commit_resolving.set()
+            publisher_waiting.wait(1)
+        return first
 
-    def record_native_mutation(
-        *,
-        rendered_viewport: wintray._RenderedPanelViewport | None = None,
-        **_kwargs: object,
-    ) -> None:
-        assert rendered_viewport is not None
-        native_generations.append(rendered_viewport.generation)
+    def record_native_call(operation: str) -> None:
+        with controller._panel_placement_lock:
+            native_calls.append(
+                (operation, controller._panel_placement_desired_generation)
+            )
+
+    controller.window = SimpleNamespace(
+        evaluate_js=lambda _code: "applied",
+        resize=lambda *_args: record_native_call("resize"),
+        move=lambda *_args: record_native_call("move"),
+    )
 
     monkeypatch.setattr(
         controller,
         "_resolve_panel_placement",
-        lambda *, force_default=False: next(placements),
+        resolve_placement,
     )
-    monkeypatch.setattr(controller, "_dispatch_window_mutation", dispatch_at_controlled_boundary)
-    monkeypatch.setattr(controller, "_place_window_on_ui_thread", record_native_mutation)
+    monkeypatch.setattr(controller, "_dispatch_window_mutation", callbacks.append)
     monkeypatch.setattr(
         controller,
         "_launch_panel_placement_worker",
@@ -1460,16 +1475,28 @@ def test_newer_request_at_dispatch_boundary_cannot_reach_native_mutation(
     )
 
     controller._place_window()
-    worker = threading.Thread(target=launchers[0], name="placement-worker")
-    worker.start()
-    assert old_dispatch_started.wait(2)
+    launchers.pop()()
+    assert len(callbacks) == 1
 
-    controller._place_window()
-    release_old_dispatch.set()
-    worker.join(2)
-    assert not worker.is_alive()
+    native_commit = threading.Thread(target=callbacks.pop(), name="native-commit")
+    native_commit.start()
+    assert commit_resolving.wait(2)
 
-    assert native_generations == [2]
+    def publish_request() -> None:
+        controller._place_window()
+        publisher_done.set()
+
+    publisher = threading.Thread(target=publish_request, name="request-publisher")
+    publisher.start()
+    native_commit.join(2)
+    publisher.join(2)
+    assert not native_commit.is_alive()
+    assert not publisher.is_alive()
+
+    assert native_calls == [("resize", 1), ("move", 1)]
+    assert publisher_waiting.is_set()
+    assert publisher_done.is_set()
+    assert controller._panel_placement_desired_generation == 2
 
 
 def test_placement_worker_coalesces_burst_to_newest_pending_request(
@@ -1573,7 +1600,7 @@ def test_request_published_during_worker_exit_is_not_lost(
             self._lock.acquire()
             if threading.current_thread().name == "placement-worker":
                 self._worker_entries += 1
-                if self._worker_entries == 3:
+                if self._worker_entries == 4:
                     worker_at_exit.set()
                     assert release_worker_exit.wait(5)
 

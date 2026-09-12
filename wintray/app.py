@@ -782,6 +782,10 @@ class _WindowsTrayController:
         # No monitor, WebView, WinForms dispatch, resize, or move call runs
         # while this coordinator lock is held.
         self._panel_placement_lock = threading.Lock()
+        # Request publication and native geometry commits share this gate. When
+        # both locks are needed, acquire this gate before _panel_placement_lock;
+        # reconciliation republishes only after releasing the gate.
+        self._panel_native_commit_lock = threading.Lock()
         self._panel_placement_sequence = 0
         self._panel_placement_desired_generation = 0
         self._panel_placement_pending: _PanelPlacementRequest | None = None
@@ -1125,21 +1129,24 @@ class _WindowsTrayController:
         if self.stopping.is_set():
             return
         launch_worker = False
-        with self._panel_placement_lock:
-            self._panel_placement_sequence += 1
-            generation = self._panel_placement_sequence
-            request = _PanelPlacementRequest(
-                generation=generation,
-                force_default=force_default,
-                show_after_commit=show_after_commit,
-            )
-            self._panel_placement_pending = request
-            self._panel_placement_desired_generation = generation
-            if show_after_commit:
-                self._panel_placement_show_pending = True
-            if not self._panel_placement_worker_running:
-                self._panel_placement_worker_running = True
-                launch_worker = True
+        with self._panel_native_commit_lock:
+            if self.stopping.is_set():
+                return
+            with self._panel_placement_lock:
+                self._panel_placement_sequence += 1
+                generation = self._panel_placement_sequence
+                request = _PanelPlacementRequest(
+                    generation=generation,
+                    force_default=force_default,
+                    show_after_commit=show_after_commit,
+                )
+                self._panel_placement_pending = request
+                self._panel_placement_desired_generation = generation
+                if show_after_commit:
+                    self._panel_placement_show_pending = True
+                if not self._panel_placement_worker_running:
+                    self._panel_placement_worker_running = True
+                    launch_worker = True
         if launch_worker:
             self._launch_panel_placement_worker()
 
@@ -1236,52 +1243,41 @@ class _WindowsTrayController:
         rendered_viewport: _RenderedPanelViewport,
         show_after_commit: bool,
     ) -> None:
-        with self._panel_placement_lock:
-            if (
-                rendered_viewport.generation
-                != self._panel_placement_desired_generation
-                or rendered_viewport != self._panel_placement_committed
-            ):
-                return
-        self._place_window_on_ui_thread(
-            force_default=force_default,
-            rendered_viewport=rendered_viewport,
-            reconcile_on_mismatch=True,
-            show_after_commit=show_after_commit,
-        )
+        reconcile = False
+        with self._panel_native_commit_lock:
+            with self._panel_placement_lock:
+                if (
+                    rendered_viewport.generation
+                    != self._panel_placement_desired_generation
+                    or rendered_viewport != self._panel_placement_committed
+                ):
+                    return
+            reconcile = self._place_window_on_ui_thread(
+                force_default=force_default,
+                rendered_viewport=rendered_viewport,
+            )
+        if reconcile and not self.stopping.is_set():
+            self._place_window(
+                force_default=force_default,
+                show_after_commit=show_after_commit,
+            )
 
     def _place_window_on_ui_thread(
         self,
         *,
         force_default: bool = False,
         rendered_viewport: _RenderedPanelViewport | None = None,
-        reconcile_on_mismatch: bool = True,
-        show_after_commit: bool = False,
-    ) -> None:
+    ) -> bool:
         if self.window is None or self.stopping.is_set():
-            return
+            return False
         placement = self._resolve_panel_placement(force_default=force_default)
         if placement is None:
-            return
+            return False
         if rendered_viewport is not None and (
             placement.work_area != rendered_viewport.work_area
             or placement.viewport != rendered_viewport.viewport
         ):
-            with self._panel_placement_lock:
-                newer_placement_exists = (
-                    self._panel_placement_desired_generation
-                    != rendered_viewport.generation
-                )
-            if (
-                reconcile_on_mismatch
-                and not newer_placement_exists
-                and not self.stopping.is_set()
-            ):
-                self._place_window(
-                    force_default=force_default,
-                    show_after_commit=show_after_commit,
-                )
-            return
+            return not self.stopping.is_set()
         viewport = (
             rendered_viewport.viewport
             if rendered_viewport is not None
@@ -1299,6 +1295,7 @@ class _WindowsTrayController:
             *self._clamp_window_position(position, placement.work_area, width, height)
         )
         self._positioned_this_show = True
+        return False
 
     def _dispatch_window_mutation(self, mutation: Callable[[], None]) -> None:
         """Serialize geometry mutations onto the native WinForms UI thread."""
