@@ -1273,19 +1273,17 @@ def test_delayed_cross_monitor_drag_reconciles_scroll_mode_without_new_event(
     assert mutations == [("resize", 380, 1000), ("move", 100, 100)]
 
 
-def test_concurrent_viewport_application_keeps_generation_in_js_order(
+def test_newer_request_supersedes_old_applied_viewport_before_native_publish(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    node = shutil.which("node")
-    if node is None:
-        pytest.skip("node is required for the executable viewport generation test")
-    a_ticketed = threading.Event()
-    b_applied = threading.Event()
-    callbacks: list[Callable[[], None]] = []
-    javascript: list[str] = []
-    document_generation = 0
+    old_applied = threading.Event()
+    release_old_publish = threading.Event()
+    launchers: list[Callable[[], None]] = []
     applied_modes: list[bool] = []
-    document_lock = threading.Lock()
+    native_viewports: list[wintray._RenderedPanelViewport] = []
+    active_javascript_calls = 0
+    max_active_javascript_calls = 0
+    javascript_lock = threading.Lock()
 
     short = wintray._PanelPlacement(
         (1000, 0, 2000, 800),
@@ -1303,82 +1301,248 @@ def test_concurrent_viewport_application_keeps_generation_in_js_order(
         resize=lambda _width, _height: None,
         move=lambda _x, _y: None,
     )
+    placements = iter((short, tall))
 
-    def resolve(*, force_default: bool = False) -> object:
-        if threading.current_thread().name == "placement-a":
-            a_ticketed.set()
-            assert b_applied.wait(5)
-            return short
-        return tall
+    def evaluate_js(code: str) -> str:
+        nonlocal active_javascript_calls, max_active_javascript_calls
+        with javascript_lock:
+            active_javascript_calls += 1
+            max_active_javascript_calls = max(
+                max_active_javascript_calls, active_javascript_calls
+            )
+        try:
+            applied_modes.append("usageApplyPanelViewport(true)" in code)
+            return "applied"
+        finally:
+            with javascript_lock:
+                active_javascript_calls -= 1
 
-    def run_in_document(code: str, generation: int) -> dict[str, object]:
-        harness = f"""
-const modes = [];
-global.window = {{
-  usagePanelViewportGeneration: {generation},
-  usageApplyPanelViewport(scrollable) {{ modes.push(scrollable); return true; }}
-}};
-const result = eval({json.dumps(code)});
-console.log(JSON.stringify({{
-  result,
-  generation: window.usagePanelViewportGeneration,
-  modes
-}}));
-"""
-        result = subprocess.run(
-            [node, "-e", harness],
-            check=False,
-            capture_output=True,
-            text=True,
-            timeout=10,
-        )
-        assert result.returncode == 0, result.stderr
-        return cast(dict[str, object], json.loads(result.stdout))
+    real_apply = controller._apply_panel_viewport
+    apply_count = 0
 
-    def evaluate_js(code: str) -> object:
-        nonlocal document_generation
-        with document_lock:
-            javascript.append(code)
-            result = run_in_document(code, document_generation)
-            document_generation = cast(int, result["generation"])
-            applied_modes.extend(cast(list[bool], result["modes"]))
-        if threading.current_thread().name == "placement-b":
-            b_applied.set()
-        return result["result"]
+    def apply_then_hold_old(
+        scrollable: bool, generation: int
+    ) -> wintray._PanelViewportApplyResult:
+        nonlocal apply_count
+        result = real_apply(scrollable, generation)
+        apply_count += 1
+        if apply_count == 1:
+            old_applied.set()
+            assert release_old_publish.wait(5)
+        return result
 
-    monkeypatch.setattr(controller, "_resolve_panel_placement", resolve)
-    monkeypatch.setattr(controller, "_dispatch_window_mutation", callbacks.append)
+    def record_native_viewport(
+        *,
+        rendered_viewport: wintray._RenderedPanelViewport | None = None,
+        **_kwargs: object,
+    ) -> None:
+        assert rendered_viewport is not None
+        native_viewports.append(rendered_viewport)
 
-    first = threading.Thread(target=controller._place_window, name="placement-a")
-    first.start()
-    assert a_ticketed.wait(2)
-    second = threading.Thread(target=controller._place_window, name="placement-b")
-    second.start()
-    first.join(2)
-    second.join(2)
-    assert not first.is_alive()
-    assert not second.is_alive()
+    monkeypatch.setattr(
+        controller, "_resolve_panel_placement", lambda *, force_default=False: next(placements)
+    )
+    monkeypatch.setattr(controller, "_apply_panel_viewport", apply_then_hold_old)
+    monkeypatch.setattr(controller, "_place_window_on_ui_thread", record_native_viewport)
+    monkeypatch.setattr(controller, "_dispatch_window_mutation", lambda callback: callback())
+    monkeypatch.setattr(
+        controller,
+        "_launch_panel_placement_worker",
+        lambda: launchers.append(controller._run_panel_placement_worker),
+        raising=False,
+    )
 
-    assert len(callbacks) == 1
-    assert len(javascript) == 2
-    assert "const generation = 2" in javascript[0]
-    assert "usageApplyPanelViewport(false)" in javascript[0]
-    assert "const generation = 1" in javascript[1]
-    assert "usageApplyPanelViewport(true)" in javascript[1]
-    assert document_generation == 2
-    assert applied_modes == [False]
+    controller._place_window()
+    assert len(launchers) == 1
+    worker = threading.Thread(target=launchers[0], name="placement-worker")
+    worker.start()
+    assert old_applied.wait(2)
+    controller._place_window()
+    release_old_publish.set()
+    worker.join(2)
+    assert not worker.is_alive()
 
-    guard = 'if (current > generation) return "stale"; '
-    assert guard in javascript[1]
-    broken = run_in_document(javascript[1].replace(guard, ""), document_generation)
-    assert broken["generation"] == 1
-    assert broken["modes"] == [True]
+    newest_rendered = wintray._RenderedPanelViewport(
+        tall.work_area, tall.viewport, generation=2
+    )
+    assert max_active_javascript_calls == 1
+    assert applied_modes == [True, False]
+    assert native_viewports == [newest_rendered]
+    assert controller._panel_placement_committed == newest_rendered
+
+
+def test_placement_worker_coalesces_burst_to_newest_pending_request(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    first_javascript_started = threading.Event()
+    release_first_javascript = threading.Event()
+    launchers: list[Callable[[], None]] = []
+    applied_modes: list[bool] = []
+    native_viewports: list[wintray._RenderedPanelViewport] = []
+    active_javascript_calls = 0
+    max_active_javascript_calls = 0
+    javascript_lock = threading.Lock()
+
+    first = wintray._PanelPlacement(
+        (1000, 0, 2000, 800),
+        (1200, 100),
+        PanelViewport(380, 776, 1000, True),
+    )
+    newest = wintray._PanelPlacement(
+        (0, 0, 1000, 1200),
+        (100, 100),
+        PanelViewport(380, 1000, 1000, False),
+    )
+    placements = iter((first, newest))
+    controller = wintray._WindowsTrayController(mock=True, interval=60)
+
+    def evaluate_js(code: str) -> str:
+        nonlocal active_javascript_calls, max_active_javascript_calls
+        with javascript_lock:
+            active_javascript_calls += 1
+            max_active_javascript_calls = max(
+                max_active_javascript_calls, active_javascript_calls
+            )
+        try:
+            applied_modes.append("usageApplyPanelViewport(true)" in code)
+            if len(applied_modes) == 1:
+                first_javascript_started.set()
+                assert release_first_javascript.wait(5)
+            return "applied"
+        finally:
+            with javascript_lock:
+                active_javascript_calls -= 1
+
+    controller.window = SimpleNamespace(evaluate_js=evaluate_js)
+    monkeypatch.setattr(
+        controller, "_resolve_panel_placement", lambda *, force_default=False: next(placements)
+    )
+    monkeypatch.setattr(
+        controller,
+        "_place_window_on_ui_thread",
+        lambda *, rendered_viewport=None, **_kwargs: native_viewports.append(
+            rendered_viewport
+        ),
+    )
+    monkeypatch.setattr(controller, "_dispatch_window_mutation", lambda callback: callback())
+    monkeypatch.setattr(
+        controller,
+        "_launch_panel_placement_worker",
+        lambda: launchers.append(controller._run_panel_placement_worker),
+        raising=False,
+    )
+
+    controller._place_window()
+    worker = threading.Thread(target=launchers[0], name="placement-worker")
+    worker.start()
+    assert first_javascript_started.wait(2)
+    controller._place_window(force_default=True)
+    controller._place_window()
+    release_first_javascript.set()
+    worker.join(2)
+    assert not worker.is_alive()
+
+    newest_rendered = wintray._RenderedPanelViewport(
+        newest.work_area, newest.viewport, generation=3
+    )
+    assert len(launchers) == 1
+    assert max_active_javascript_calls == 1
+    assert applied_modes == [True, False]
+    assert native_viewports == [newest_rendered]
+    assert controller._panel_placement_committed == newest_rendered
+
+
+def test_request_published_during_worker_exit_is_not_lost(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    worker_at_exit = threading.Event()
+    release_worker_exit = threading.Event()
+    publisher_waiting = threading.Event()
+    launchers: list[Callable[[], None]] = []
+    native_viewports: list[wintray._RenderedPanelViewport | None] = []
+
+    class ExitBoundaryLock:
+        def __init__(self) -> None:
+            self._lock = threading.Lock()
+            self._worker_entries = 0
+
+        def __enter__(self) -> None:
+            if worker_at_exit.is_set() and not release_worker_exit.is_set():
+                publisher_waiting.set()
+            self._lock.acquire()
+            if threading.current_thread().name == "placement-worker":
+                self._worker_entries += 1
+                if self._worker_entries == 3:
+                    worker_at_exit.set()
+                    assert release_worker_exit.wait(5)
+
+        def __exit__(self, *_args: object) -> None:
+            self._lock.release()
+
+    first = wintray._PanelPlacement(
+        (1000, 0, 2000, 800),
+        (1200, 100),
+        PanelViewport(380, 776, 1000, True),
+    )
+    newest = wintray._PanelPlacement(
+        (0, 0, 1000, 1200),
+        (100, 100),
+        PanelViewport(380, 1000, 1000, False),
+    )
+    placements = iter((first, newest))
+    controller = wintray._WindowsTrayController(mock=True, interval=60)
+    controller.__dict__["_panel_placement_lock"] = ExitBoundaryLock()
+    controller.window = SimpleNamespace(evaluate_js=lambda _code: "applied")
+    monkeypatch.setattr(
+        controller, "_resolve_panel_placement", lambda *, force_default=False: next(placements)
+    )
+    monkeypatch.setattr(
+        controller,
+        "_place_window_on_ui_thread",
+        lambda *, rendered_viewport=None, **_kwargs: native_viewports.append(
+            rendered_viewport
+        ),
+    )
+    monkeypatch.setattr(controller, "_dispatch_window_mutation", lambda callback: callback())
+    monkeypatch.setattr(
+        controller,
+        "_launch_panel_placement_worker",
+        lambda: launchers.append(controller._run_panel_placement_worker),
+        raising=False,
+    )
+
+    controller._place_window()
+    worker = threading.Thread(target=launchers[0], name="placement-worker")
+    worker.start()
+    assert worker_at_exit.wait(2)
+    publisher = threading.Thread(target=controller._place_window, name="publisher")
+    publisher.start()
+    assert publisher_waiting.wait(2)
+    release_worker_exit.set()
+    worker.join(2)
+    publisher.join(2)
+    assert not worker.is_alive()
+    assert not publisher.is_alive()
+    assert len(launchers) == 2
+
+    replacement = threading.Thread(target=launchers[1], name="replacement-worker")
+    replacement.start()
+    replacement.join(2)
+    assert not replacement.is_alive()
+
+    assert native_viewports == [
+        wintray._RenderedPanelViewport(first.work_area, first.viewport, generation=1),
+        wintray._RenderedPanelViewport(newest.work_area, newest.viewport, generation=2),
+    ]
+    assert controller._panel_placement_pending is None
+    assert controller._panel_placement_worker_running is False
 
 
 def test_unavailable_non_scroll_viewport_does_not_publish_generation(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     callbacks: list[Callable[[], None]] = []
+    launchers: list[Callable[[], None]] = []
     controller = wintray._WindowsTrayController(mock=True, interval=60)
     controller.window = SimpleNamespace(evaluate_js=lambda _code: False)
     monkeypatch.setattr(
@@ -1391,10 +1555,18 @@ def test_unavailable_non_scroll_viewport_does_not_publish_generation(
         ),
     )
     monkeypatch.setattr(controller, "_dispatch_window_mutation", callbacks.append)
+    monkeypatch.setattr(
+        controller,
+        "_launch_panel_placement_worker",
+        lambda: launchers.append(controller._run_panel_placement_worker),
+        raising=False,
+    )
 
     controller._place_window()
+    assert len(launchers) == 1
+    launchers[0]()
 
-    assert controller._panel_placement_generation == 0
+    assert controller._panel_placement_committed is None
     assert callbacks == []
 
 

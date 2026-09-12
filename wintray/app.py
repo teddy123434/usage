@@ -18,6 +18,7 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta
 from enum import IntEnum
+from functools import partial
 from importlib import metadata
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, cast
@@ -142,6 +143,13 @@ class _RenderedPanelViewport:
     work_area: tuple[int, int, int, int]
     viewport: PanelViewport
     generation: int
+
+
+@dataclass(frozen=True, slots=True)
+class _PanelPlacementRequest:
+    generation: int
+    force_default: bool
+    show_after_commit: bool = False
 
 
 class _PanelViewportApplyResult(IntEnum):
@@ -771,11 +779,15 @@ class _WindowsTrayController:
         self._window_mutations: deque[Callable[[], None]] = deque()
         self._window_mutation_lock = threading.Lock()
         self._window_mutation_scheduled = False
-        # This lock only issues and publishes sequence numbers; no WebView or
-        # WinForms call runs while it is held.
+        # No monitor, WebView, WinForms dispatch, resize, or move call runs
+        # while this coordinator lock is held.
         self._panel_placement_lock = threading.Lock()
         self._panel_placement_sequence = 0
-        self._panel_placement_generation = 0
+        self._panel_placement_desired_generation = 0
+        self._panel_placement_pending: _PanelPlacementRequest | None = None
+        self._panel_placement_committed: _RenderedPanelViewport | None = None
+        self._panel_placement_worker_running = False
+        self._panel_placement_show_pending = False
 
     def _empty_state(self) -> menubar_state.PopoverState:
         missing = menubar_state._missing_row
@@ -1108,35 +1120,91 @@ class _WindowsTrayController:
         self,
         *,
         force_default: bool = False,
-        _reconcile_on_mismatch: bool = True,
+        show_after_commit: bool = False,
     ) -> None:
+        if self.stopping.is_set():
+            return
+        launch_worker = False
         with self._panel_placement_lock:
             self._panel_placement_sequence += 1
             generation = self._panel_placement_sequence
-        placement = self._resolve_panel_placement(force_default=force_default)
-        if placement is None:
-            return
-        viewport_applied = self._apply_panel_viewport(
-            placement.viewport.scrollable,
-            generation,
-        )
-        if viewport_applied is not _PanelViewportApplyResult.APPLIED:
-            return
-        with self._panel_placement_lock:
-            self._panel_placement_generation = max(
-                self._panel_placement_generation,
-                generation,
-            )
-            rendered_viewport = _RenderedPanelViewport(
-                placement.work_area, placement.viewport, generation
-            )
-        self._dispatch_window_mutation(
-            lambda: self._place_window_on_ui_thread(
+            request = _PanelPlacementRequest(
+                generation=generation,
                 force_default=force_default,
-                rendered_viewport=rendered_viewport,
-                reconcile_on_mismatch=_reconcile_on_mismatch,
+                show_after_commit=show_after_commit,
             )
-        )
+            self._panel_placement_pending = request
+            self._panel_placement_desired_generation = generation
+            if show_after_commit:
+                self._panel_placement_show_pending = True
+            if not self._panel_placement_worker_running:
+                self._panel_placement_worker_running = True
+                launch_worker = True
+        if launch_worker:
+            self._launch_panel_placement_worker()
+
+    def _launch_panel_placement_worker(self) -> None:
+        threading.Thread(
+            target=self._run_panel_placement_worker,
+            daemon=True,
+        ).start()
+
+    def _run_panel_placement_worker(self) -> None:
+        while not self.stopping.is_set():
+            with self._panel_placement_lock:
+                request = self._panel_placement_pending
+                self._panel_placement_pending = None
+                if request is None:
+                    self._panel_placement_worker_running = False
+                    return
+
+            placement = self._resolve_panel_placement(
+                force_default=request.force_default
+            )
+            viewport_applied = (
+                _PanelViewportApplyResult.UNAVAILABLE
+                if placement is None
+                else self._apply_panel_viewport(
+                    placement.viewport.scrollable,
+                    request.generation,
+                )
+            )
+
+            rendered_viewport: _RenderedPanelViewport | None = None
+            show_after_commit = False
+            with self._panel_placement_lock:
+                if request.generation != self._panel_placement_desired_generation:
+                    continue
+                if viewport_applied is _PanelViewportApplyResult.APPLIED:
+                    assert placement is not None
+                    rendered_viewport = _RenderedPanelViewport(
+                        placement.work_area,
+                        placement.viewport,
+                        request.generation,
+                    )
+                    self._panel_placement_committed = rendered_viewport
+                    show_after_commit = self._panel_placement_show_pending
+                elif viewport_applied is _PanelViewportApplyResult.UNAVAILABLE:
+                    rendered_viewport = self._panel_placement_committed
+                    if rendered_viewport is not None:
+                        self._panel_placement_desired_generation = (
+                            rendered_viewport.generation
+                        )
+                        show_after_commit = self._panel_placement_show_pending
+
+            if rendered_viewport is not None:
+                self._dispatch_window_mutation(
+                    partial(
+                        self._place_window_on_ui_thread,
+                        force_default=request.force_default,
+                        rendered_viewport=rendered_viewport,
+                        reconcile_on_mismatch=True,
+                        show_after_commit=show_after_commit,
+                    )
+                )
+
+        with self._panel_placement_lock:
+            self._panel_placement_worker_running = False
 
     def _resolve_panel_placement(self, *, force_default: bool = False) -> _PanelPlacement | None:
         primary_work_area = self._working_area()
@@ -1168,6 +1236,7 @@ class _WindowsTrayController:
         force_default: bool = False,
         rendered_viewport: _RenderedPanelViewport | None = None,
         reconcile_on_mismatch: bool = True,
+        show_after_commit: bool = False,
     ) -> None:
         if self.window is None or self.stopping.is_set():
             return
@@ -1179,7 +1248,7 @@ class _WindowsTrayController:
             or placement.viewport != rendered_viewport.viewport
         ):
             newer_placement_exists = (
-                self._panel_placement_generation != rendered_viewport.generation
+                self._panel_placement_desired_generation != rendered_viewport.generation
             )
             if (
                 reconcile_on_mismatch
