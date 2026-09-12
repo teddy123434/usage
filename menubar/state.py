@@ -20,8 +20,9 @@ from typing import TYPE_CHECKING, Any, Protocol, TypedDict, cast
 from i18n import _t
 from installer.statusline_settings import _statusline_enabled
 from loaders import codex_loader, grok_loader
+from loaders.claude_paths import claude_config_dirs
 from loaders.codex_paths import codex_home
-from loaders.history_loader import CLAUDE_PROJECTS_DIR, UsageEntry, load_entries
+from loaders.history_loader import UsageEntry, load_entries
 from loaders.ocx_quota import (
     Freshness,
     LogicalProvider,
@@ -101,6 +102,7 @@ class QuotaRowState:
     warning: bool = False
     available: bool = True
     updated_at: datetime | None = None
+    reset_text_compact: str = ""
 
 
 @dataclass(frozen=True, slots=True)
@@ -200,11 +202,6 @@ class PopoverState:
     provider_sources: dict[str, ProviderSourceState] = field(default_factory=dict)
     openrouter: OpenRouterState | None = None
     codex_current_account: CodexCurrentAccountState | None = None
-    # Talent-market panel payload (None for non-talent panels). Fetched from the
-    # external instate-cli by talent_market_bridge, only when the active panel
-    # is "talent_market", so classic/matrix users never spawn that subprocess.
-    talent: dict[str, object] | None = None
-
 
 @dataclass(frozen=True, slots=True)
 class HistorySourceScan:
@@ -294,9 +291,9 @@ def _jsonl_paths(root: Path) -> tuple[Path, ...]:
         return ()
 
 
-def _history_directory_sources() -> tuple[Path, Path, Path]:
+def _history_directory_sources() -> tuple[Path, ...]:
     return (
-        CLAUDE_PROJECTS_DIR,
+        *(path / "projects" for path in claude_config_dirs()),
         codex_loader.SESSIONS_DIR,
         codex_loader.ARCHIVED_SESSIONS_DIR,
     )
@@ -1247,11 +1244,11 @@ def _quota_row(
         return _missing_row(title, color, language)
     pct = max(0.0, min(100.0, float(pct)))
     time_to_reset = resets_at - now
+    warning_seconds: float | None = None
     if time_to_reset < 60:
         reset_text = _t(language, "reset_imminent")
         warning = False
     else:
-        warning_seconds: float | None = None
         if (
             forecast_seconds is not None
             and 0 < forecast_seconds < time_to_reset
@@ -1273,7 +1270,7 @@ def _quota_row(
                 "reset_in",
                 time=format_human_time(time_to_reset, language),
             )
-    return QuotaRowState(
+    row = QuotaRowState(
         title=title,
         percent=pct,
         percent_text=_t(language, "percent_used", value=_format_percent(pct)),
@@ -1283,6 +1280,13 @@ def _quota_row(
         available=True,
         updated_at=updated_at,
     )
+    if warning_seconds is not None:
+        row.reset_text_compact = _t(
+            language,
+            "burn_warning_compact",
+            empty=format_human_time(warning_seconds, language),
+        )
+    return row
 
 
 def _missing_row(

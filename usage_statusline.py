@@ -67,7 +67,7 @@ else:
 fcntl = _fcntl
 msvcrt = _msvcrt
 
-__version__ = "1.5"
+__version__ = "1.6"
 
 STATUS_FILE = os.path.expanduser("~/.claude/usage-status.json")
 LOCK_FILE = os.path.expanduser("~/.claude/usage-status.lock")
@@ -519,7 +519,9 @@ def fmt_tokens(n: Any) -> str:
         value = int(n)
     except (TypeError, ValueError):
         value = 0
-    if value >= 1_000_000:
+    if value >= 999_950_000:
+        return f"{value / 1_000_000_000:.1f}B"
+    if value >= 999_500:
         return f"{value / 1_000_000:.1f}M"
     if value >= 1_000:
         return f"{value / 1_000:.0f}k"

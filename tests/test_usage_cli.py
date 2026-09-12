@@ -18,6 +18,7 @@ import pytest
 
 import i18n
 from adapters.types import AgentInfo, RateLimits, SessionStats, UsageEntry
+from analyzer import reporter
 from ui import html_report, tables
 
 usage_cli: Any = import_module("usage_cli")
@@ -100,6 +101,12 @@ def test_recent_titles_section_tolerates_missing_key() -> None:
         {"persona": {"hour_histogram": []}},
         "en",
     ) == ""
+
+
+def test_dashboard_and_reporter_agree_on_agent_loaders() -> None:
+    """鎖住 dashboard 與 report 的 loader map 必須同步；兩份 map 曾只同步一半，
+    導致 dashboard 的 Antigravity 分頁顯示 No data，但 report 指令仍有資料。"""
+    assert set(usage_cli.AGENT_LOADERS) == set(reporter.AGENT_LOADERS)
 
 
 def test_recent_titles_section_masks_and_escapes_each_title() -> None:

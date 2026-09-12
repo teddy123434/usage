@@ -49,14 +49,13 @@ from loaders.codex_paths import codex_home
 from usage_common.usage_lang import detect_lang
 from usage_statusline import _exclusive_lock
 
-CLAUDE_SETTINGS = setup_hook.CLAUDE_SETTINGS
 CODEX_CONFIG = setup_hook.CODEX_CONFIG
 
 # Ceiling C — opt-in SessionStart hook that injects "where you left off" into a new
 # session. Off by default: enabled only via the menu toggle, never by self_heal.
 RESUME_HOOK_TARGET = Path(os.path.expanduser("~/.claude/usage-session-resume.py"))
 RESUME_PROMPT_SIDECAR = Path(os.path.expanduser("~/.claude/usage-resume-prompt.json"))
-RESUME_HOOK_VERSION = "1.6"
+RESUME_HOOK_VERSION = "1.7"
 RESUME_MATCHER = "startup|clear"
 RESUME_LANGS = ("zh-TW", "zh-CN", "en", "ja", "ko")
 _RESUME_MARKER = "usage-session-resume"
@@ -70,7 +69,7 @@ _RESUME_DIAGNOSIS_CAUSE_KEYS = (
 )
 TERSE_HOOK_TARGET = Path(os.path.expanduser("~/.claude/usage-terse-mode.py"))
 TERSE_PROMPT_SIDECAR = Path(os.path.expanduser("~/.claude/usage-terse-prompt.json"))
-TERSE_HOOK_VERSION = "1.3"
+TERSE_HOOK_VERSION = "1.4"
 TERSE_MATCHER = "startup|clear"
 TERSE_LANGS = ("zh-TW", "zh-CN", "en", "ja", "ko")
 _TERSE_MARKER = "usage-terse-mode"
@@ -85,7 +84,7 @@ _FEATURES_HOOKS_REGEX = re.compile(r"(?m)^[ \t]*hooks\s*=\s*[A-Za-z0-9_]+")
 # terse hook. Re-injects a one-line nudge on every prompt so the terse style holds across a
 # long conversation. Claude Code only — Codex CLI has no UserPromptSubmit equivalent.
 TERSE_REMINDER_HOOK_TARGET = Path(os.path.expanduser("~/.claude/usage-terse-reminder.py"))
-TERSE_REMINDER_HOOK_VERSION = "1.1"
+TERSE_REMINDER_HOOK_VERSION = "1.2"
 TERSE_REMINDER_MATCHER = ""
 _TERSE_REMINDER_MARKER = "usage-terse-reminder"
 _TERSE_REMINDER_MARKERS = (_TERSE_REMINDER_MARKER, "usage_terse_reminder")
@@ -679,7 +678,7 @@ def is_terse_reminder_enabled() -> bool:
 
 def enable_session_resume() -> int:
     setup_hook.configure_windows_utf8_output()
-    if not CLAUDE_SETTINGS.parent.exists():
+    if not setup_hook._claude_settings_dir_exists():
         print(_t("setup_no_agents"), file=sys.stderr)
         return 1
     _copy_resume_script()
@@ -705,7 +704,7 @@ def enable_session_resume() -> int:
 
 def enable_terse_mode() -> int:
     setup_hook.configure_windows_utf8_output()
-    if not CLAUDE_SETTINGS.parent.exists():
+    if not setup_hook._claude_settings_dir_exists():
         print(_t("setup_no_agents"), file=sys.stderr)
         return 1
     _copy_terse_script()
@@ -735,7 +734,7 @@ def enable_terse_mode() -> int:
 
 def disable_session_resume() -> int:
     setup_hook.configure_windows_utf8_output()
-    if CLAUDE_SETTINGS.parent.exists():
+    if setup_hook._claude_install_exists():
         settings = _load_settings()
         session_start = _session_start_list(settings)
         if session_start is not None:
@@ -758,7 +757,7 @@ def disable_session_resume() -> int:
 
 def disable_terse_mode() -> int:
     setup_hook.configure_windows_utf8_output()
-    if CLAUDE_SETTINGS.parent.exists():
+    if setup_hook._claude_install_exists():
         settings = _load_settings()
         changed = False
 
@@ -1041,7 +1040,7 @@ def _installed_resume_command() -> str:
 
 
 def _recent_claude_dir_changes(limit: int = 6) -> str:
-    root = CLAUDE_SETTINGS.parent
+    root = RESUME_HOOK_TARGET.parent
     try:
         entries = sorted(
             (entry for entry in root.iterdir()),
@@ -1064,7 +1063,7 @@ def _recent_claude_dir_changes(limit: int = 6) -> str:
 
 
 def _append_self_heal_log(action: str, detail: str) -> None:
-    target_dir = CLAUDE_SETTINGS.parent
+    target_dir = RESUME_HOOK_TARGET.parent
     # Not usage-status.lock: that one guards the high-frequency statusline
     # writes to a different file, and sharing it would serialize them here.
     lock_file = target_dir / "usage-settings.lock"

@@ -94,6 +94,7 @@ def _row_payload(row: QuotaRowState) -> dict[str, object]:
         "percent": row.percent,
         "percentText": row.percent_text,
         "resetText": row.reset_text,
+        "resetTextCompact": row.reset_text_compact or row.reset_text,
         "warning": row.warning,
         "available": row.available,
         "title": row.title,
@@ -210,7 +211,6 @@ def _state_payload(
         "cardOrder": list(state.card_order),
         "historyError": state.history_error,
         "statusline": state.statusline,
-        "talent": state.talent,
         "footer": {
             "rate": state.rate_text,
             "status": state.status_text,

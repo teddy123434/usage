@@ -241,7 +241,7 @@ def test_save_settings_preserves_symlink_and_updates_target(
     settings_target.parent.mkdir()
     settings_target.write_text('{"original": true}\n', encoding="utf-8")
     settings_link.symlink_to(settings_target)
-    monkeypatch.setattr(setup_hook, "CLAUDE_SETTINGS", settings_link)
+    monkeypatch.setattr(setup_hook, "_claude_settings_path", lambda: settings_link)
 
     setup_hook._save_settings({"updated": True})
 
@@ -1201,3 +1201,13 @@ def test_statusline_script_version_matches_hook_constant() -> None:
     match = re.search(r'^__version__ = "([^"]+)"$', source, re.M)
     assert match, "usage_statusline.py has no __version__ line"
     assert match.group(1) == setup_hook.HOOK_VERSION
+
+
+def test_session_resume_script_version_matches_hook_constant() -> None:
+    """Keep the session-resume script version synchronized with its hook constant."""
+    source = (Path(__file__).resolve().parents[1] / "usage_session_resume.py").read_text(
+        encoding="utf-8"
+    )
+    match = re.search(r'^__version__ = "([^"]+)"$', source, re.M)
+    assert match, "usage_session_resume.py has no __version__ line"
+    assert match.group(1) == session_hooks.RESUME_HOOK_VERSION

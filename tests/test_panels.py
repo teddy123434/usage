@@ -76,7 +76,6 @@ def test_registered_panel_ids_are_unique() -> None:
         "black_hole",
         "lepidoptera",
         "world_cup",
-        "talent_market",
         "catppuccin",
     )
     assert len(ids) == len(set(ids))
@@ -99,7 +98,6 @@ def test_registered_panel_i18n_keys() -> None:
         "panel_black_hole",
         "panel_lepidoptera",
         "panel_world_cup",
-        "panel_talent_market",
         "panel_catppuccin",
     ]
 
@@ -140,10 +138,6 @@ def test_html_panels_place_analyze_and_cli_in_project_header() -> None:
     panel_dir = Path(__file__).resolve().parent.parent / "assets" / "panels"
 
     for panel_path in sorted(panel_dir.glob("*.html")):
-        # talent_market is a non-quota marketplace panel (talent packs → roles),
-        # so it has no project range / analyze / CLI / footer affordances.
-        if panel_path.name == "talent_market.html":
-            continue
         html = panel_path.read_text(encoding="utf-8")
         project_index = html.index('data-action="toggle-project-range"')
         footer_index = html.index('<section class="footer"')
@@ -259,15 +253,6 @@ def test_card_panels_expose_one_openrouter_dom_contract(filename: str) -> None:
     ):
         elements = re.findall(rf'<[^/!][^>]*\b{attribute}(?:[=>\s])[^>]*>', html)
         assert len(elements) == 1, (filename, attribute)
-
-
-
-def test_talent_market_stays_outside_quota_card_contract() -> None:
-    panel_path = (
-        Path(__file__).resolve().parent.parent / "assets" / "panels" / "talent_market.html"
-    )
-
-    assert 'data-card="openrouter"' not in panel_path.read_text(encoding="utf-8")
 
 
 def test_shared_core_renders_sources_reauth_and_openrouter_with_text_only_dom() -> None:
@@ -577,7 +562,7 @@ def test_html_panel_requires_explicit_card_heights() -> None:
         constructor("test", "panel_test", "test.html", claude_card_height=100.0)
 
 
-def test_html_panel_dynamic_height_defaults_and_talent_market_opt_out() -> None:
+def test_html_panel_dynamic_height_defaults() -> None:
     panel = HTMLPanel(
         "test",
         "panel_test",
@@ -587,7 +572,6 @@ def test_html_panel_dynamic_height_defaults_and_talent_market_opt_out() -> None:
     )
 
     assert panel.dynamic_height is True
-    assert cast(HTMLPanel, panels.get_panel("talent_market")).dynamic_height is False
 
 
 @pytest.mark.parametrize("dynamic_height", [True, False])

@@ -137,9 +137,12 @@ def _sandbox_reporter_dependencies(
     monkeypatch.setattr(codex_loader, "STATE_DB", tmp_path / ".codex" / "state_5.sqlite")
     monkeypatch.setattr(codex_loader, "LOGS_DB", tmp_path / ".codex" / "logs_2.sqlite")
     monkeypatch.setattr(codex_loader, "JSONL_CACHE_PATH", tmp_path / ".usage" / "codex_cache.json")
-    monkeypatch.setattr(history_loader, "CLAUDE_PROJECTS_DIR", tmp_path / ".claude" / "projects")
-    monkeypatch.setattr(persona_loader, "CLAUDE_PROJECTS_DIR", tmp_path / ".claude" / "projects")
-    monkeypatch.setattr(subscription, "CLAUDE_CONFIG", tmp_path / ".claude.json")
+    claude_projects = tmp_path / ".claude" / "projects"
+    monkeypatch.setattr(history_loader, "_claude_projects_dirs", lambda: [claude_projects])
+    monkeypatch.setattr(persona_loader, "_claude_projects_dirs", lambda: [claude_projects])
+    monkeypatch.setattr(
+        subscription, "_claude_config_path", lambda: tmp_path / ".claude.json"
+    )
     monkeypatch.setattr(subscription, "CODEX_AUTH", tmp_path / ".codex" / "auth.json")
     monkeypatch.setattr(pricing, "CACHE_PATH", tmp_path / ".usage" / "pricing_cache.json")
     monkeypatch.setattr(pricing, "LEGACY_CACHE_PATH", tmp_path / ".claude" / "pricing_cache.json")
@@ -274,6 +277,80 @@ def test_build_report_data_week_window_includes_boundaries_and_zero_fill(
         {"date": "2026-05-19", "tokens": 0, "cost": 0.0},
         {"date": "2026-05-20", "tokens": 50, "cost": 0.5},
         {"date": "2026-05-21", "tokens": 25, "cost": 0.25},
+    ]
+
+
+def test_build_report_data_sums_token_composition_for_summary_and_agents(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    fixed_now = datetime(2026, 5, 21, 12, tzinfo=UTC)
+    agents = [
+        AgentInfo("claude-code", "Claude Code", "~/.claude", True),
+        AgentInfo("codex", "Codex", "~/.codex", True),
+    ]
+    entries = [
+        _entry(
+            when=fixed_now,
+            session_id="claude",
+            model="claude",
+            project="usage",
+            agent_id="claude-code",
+            input_tokens=10,
+            output_tokens=20,
+            cache_creation_tokens=30,
+            cache_read_tokens=40,
+        ),
+        _entry(
+            when=fixed_now,
+            session_id="codex",
+            model="gpt",
+            project="usage",
+            agent_id="codex",
+            input_tokens=1,
+            output_tokens=2,
+            cache_creation_tokens=3,
+            cache_read_tokens=4,
+        ),
+    ]
+
+    monkeypatch.setattr(reporter, "datetime", _fixed_datetime(fixed_now))
+    monkeypatch.setattr(
+        reporter,
+        "_load_agent_entries",
+        lambda agent, _hours_back=0: [entry for entry in entries if entry.agent_id == agent.id],
+    )
+
+    data = reporter.build_report_data(agents, "today")
+
+    token_keys = (
+        "input_tokens",
+        "output_tokens",
+        "cache_creation_tokens",
+        "cache_read_tokens",
+    )
+    summary: Any = data["summary"]
+    assert {key: summary[key] for key in token_keys} == {
+        "input_tokens": 11,
+        "output_tokens": 22,
+        "cache_creation_tokens": 33,
+        "cache_read_tokens": 44,
+    }
+    by_agent: list[Any] = list(data["by_agent"])
+    assert [{key: agent[key] for key in ("id", *token_keys)} for agent in by_agent] == [
+        {
+            "id": "claude-code",
+            "input_tokens": 10,
+            "output_tokens": 20,
+            "cache_creation_tokens": 30,
+            "cache_read_tokens": 40,
+        },
+        {
+            "id": "codex",
+            "input_tokens": 1,
+            "output_tokens": 2,
+            "cache_creation_tokens": 3,
+            "cache_read_tokens": 4,
+        },
     ]
 
 
@@ -459,6 +536,10 @@ def test_build_report_data_aggregates_agent_and_model_totals(
 
     assert data["summary"] == {
         "total_tokens": 370,
+        "input_tokens": 370,
+        "output_tokens": 0,
+        "cache_creation_tokens": 0,
+        "cache_read_tokens": 0,
         "cost_usd": 5.7,
         "sessions": 3,
         "messages": 7,
@@ -470,6 +551,10 @@ def test_build_report_data_aggregates_agent_and_model_totals(
             "id": "claude-code",
             "name": "Claude Code",
             "tokens": 220,
+            "input_tokens": 220,
+            "output_tokens": 0,
+            "cache_creation_tokens": 0,
+            "cache_read_tokens": 0,
             "cost": 4.2,
             "sessions": 2,
             "messages": 4,
@@ -479,6 +564,10 @@ def test_build_report_data_aggregates_agent_and_model_totals(
             "id": "codex",
             "name": "Codex",
             "tokens": 150,
+            "input_tokens": 150,
+            "output_tokens": 0,
+            "cache_creation_tokens": 0,
+            "cache_read_tokens": 0,
             "cost": 1.5,
             "sessions": 1,
             "messages": 3,

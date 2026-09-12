@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import ctypes
 import json
 import shutil
 import subprocess
@@ -249,11 +250,28 @@ def test_build_tooltip_includes_antigravity_when_visible() -> None:
     assert "Antigravity" not in wintray.build_tooltip(_state())
 
 
-def test_windows_panels_exclude_talent_market() -> None:
-    ids = [panel[0] for panel in wintray.available_panels()]
+def test_build_tooltip_is_safe_for_windows_sz_tip() -> None:
+    base_state = _state()
+    full_row = replace(base_state.claude_session, percent=100.0)
+    state = replace(
+        base_state,
+        hide_agy=False,
+        hide_grok=False,
+        claude_session=full_row,
+        claude_weekly=full_row,
+        codex_session=full_row,
+        codex_weekly=full_row,
+        agy_session=full_row,
+        agy_weekly=full_row,
+        grok_weekly=full_row,
+    )
 
-    assert "classic" in ids
-    assert "talent_market" not in ids
+    tooltip = wintray.build_tooltip(state)
+
+    assert len(tooltip) <= 127
+    assert tooltip.endswith("…")
+    buffer = (ctypes.c_wchar * 128)()
+    buffer.value = tooltip
 
 
 def test_system_background_color_dark(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -659,6 +677,102 @@ def test_panel_position_is_clamped_and_persisted_on_hide(
     assert prefs._load_preferences()["usage.windowPosition"] == {"x": 123, "y": 234}
 
 
+def test_panel_position_is_saved_as_native_physical_pixels(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    preferences_path = tmp_path / "usage-preferences.json"
+    monkeypatch.setattr(prefs, "PREFERENCES_FILE", preferences_path)
+    controller = wintray._WindowsTrayController(mock=True, interval=60)
+    controller.window = SimpleNamespace(
+        native=SimpleNamespace(Left=2520, Top=27), x=1120, y=12, hide=lambda: None
+    )
+    controller.visible = True
+    monkeypatch.setattr(controller, "_window_dpi_scale", lambda: 2.25)
+
+    controller.show_panel()
+
+    assert prefs._load_preferences()["usage.windowPosition"] == {"x": 2520, "y": 27}
+
+
+def test_panel_position_falls_back_to_scaled_logical_pixels(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    preferences_path = tmp_path / "usage-preferences.json"
+    monkeypatch.setattr(prefs, "PREFERENCES_FILE", preferences_path)
+    controller = wintray._WindowsTrayController(mock=True, interval=60)
+    controller.window = SimpleNamespace(x=1120, y=12, hide=lambda: None)
+    controller.visible = True
+    monkeypatch.setattr(controller, "_window_dpi_scale", lambda: 2.25)
+
+    controller.show_panel()
+
+    assert prefs._load_preferences()["usage.windowPosition"] == {"x": 2520, "y": 27}
+
+
+def test_physical_saved_position_returns_to_secondary_screen_after_restart(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    preferences_path = tmp_path / "usage-preferences.json"
+    preferences_path.write_text(
+        json.dumps({"usage.windowPosition": {"x": 2520, "y": 27}}), encoding="utf-8"
+    )
+    monkeypatch.setattr(prefs, "PREFERENCES_FILE", preferences_path)
+    screens = [
+        SimpleNamespace(
+            x=0, y=0, width=1920, height=1080,
+            frame=SimpleNamespace(Left=0, Top=0, Right=1920, Bottom=1040), scale=1.0,
+        ),
+        SimpleNamespace(
+            x=1920, y=0, width=2560, height=1440,
+            frame=SimpleNamespace(Left=1920, Top=0, Right=4480, Bottom=1258), scale=1.0,
+        ),
+    ]
+    monkeypatch.setitem(sys.modules, "webview", SimpleNamespace(screens=screens))
+    moves: list[tuple[int, int]] = []
+    controller = wintray._WindowsTrayController(mock=True, interval=60)
+    controller.window = SimpleNamespace(
+        x=0, y=0, resize=lambda *_args: None, move=lambda x, y: moves.append((x, y))
+    )
+    controller._content_height = 400
+    monkeypatch.setattr(controller, "_window_dpi_scale", lambda: 1.0)
+
+    controller._place_window()
+
+    assert moves == [(2520, 27)]
+
+
+def test_physical_saved_position_uses_current_secondary_dpi_scale(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    preferences_path = tmp_path / "usage-preferences.json"
+    preferences_path.write_text(
+        json.dumps({"usage.windowPosition": {"x": 2520, "y": 27}}), encoding="utf-8"
+    )
+    monkeypatch.setattr(prefs, "PREFERENCES_FILE", preferences_path)
+    screens = [
+        SimpleNamespace(
+            x=0, y=0, width=1920, height=1080,
+            frame=SimpleNamespace(Left=0, Top=0, Right=1920, Bottom=1040), scale=1.0,
+        ),
+        SimpleNamespace(
+            x=1920, y=0, width=2560, height=1440,
+            frame=SimpleNamespace(Left=1920, Top=0, Right=4480, Bottom=1258), scale=1.0,
+        ),
+    ]
+    monkeypatch.setitem(sys.modules, "webview", SimpleNamespace(screens=screens))
+    moves: list[tuple[int, int]] = []
+    controller = wintray._WindowsTrayController(mock=True, interval=60)
+    controller.window = SimpleNamespace(
+        x=0, y=0, resize=lambda *_args: None, move=lambda x, y: moves.append((x, y))
+    )
+    controller._content_height = 400
+    monkeypatch.setattr(controller, "_window_dpi_scale", lambda: 2.25)
+
+    controller._place_window()
+
+    assert moves == [(1120, 12)]
+
+
 def test_dpi_scaled_monitor_placement_uses_logical_coordinates(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -696,6 +810,182 @@ def test_dpi_scaled_monitor_placement_uses_logical_coordinates(
     controller._place_window()
 
     assert mutations == [("resize", 380, 400), ("move", 2424, 268)]
+
+
+def test_physical_dpi_scaled_screens_are_converted_to_logical_coordinates(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    screens = [
+        SimpleNamespace(
+            x=0,
+            y=0,
+            width=3840,
+            height=2160,
+            frame=SimpleNamespace(Left=0, Top=0, Right=3840, Bottom=2040),
+            scale=1.0,
+        )
+    ]
+    monkeypatch.setitem(sys.modules, "webview", SimpleNamespace(screens=screens))
+    mutations: list[tuple[str, int, int]] = []
+    controller = wintray._WindowsTrayController(mock=True, interval=60)
+    controller.window = SimpleNamespace(
+        x=0,
+        y=0,
+        resize=lambda width, height: mutations.append(("resize", width, height)),
+        move=lambda x, y: mutations.append(("move", x, y)),
+    )
+    controller._content_height = 400
+    monkeypatch.setattr(controller, "_window_dpi_scale", lambda: 2.5)
+
+    controller._place_window()
+
+    assert mutations == [("resize", 380, 400), ("move", 1144, 404)]
+
+
+def test_physical_dpi_scaled_saved_position_is_clamped_to_logical_screen(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    preferences_path = tmp_path / "usage-preferences.json"
+    preferences_path.write_text(
+        json.dumps({"usage.windowPosition": {"x": 3448, "y": 896}}), encoding="utf-8"
+    )
+    monkeypatch.setattr(prefs, "PREFERENCES_FILE", preferences_path)
+    screens = [
+        SimpleNamespace(
+            x=0,
+            y=0,
+            width=3840,
+            height=2160,
+            frame=SimpleNamespace(Left=0, Top=0, Right=3840, Bottom=2040),
+            scale=1.0,
+        )
+    ]
+    monkeypatch.setitem(sys.modules, "webview", SimpleNamespace(screens=screens))
+    moves: list[tuple[int, int]] = []
+    controller = wintray._WindowsTrayController(mock=True, interval=60)
+    controller.window = SimpleNamespace(
+        x=0, y=0, resize=lambda *_args: None, move=lambda x, y: moves.append((x, y))
+    )
+    controller._content_height = 400
+    monkeypatch.setattr(controller, "_window_dpi_scale", lambda: 2.5)
+
+    controller._place_window()
+
+    assert moves == [(1144, 358)]
+
+
+def test_physical_dpi_scaled_screens_use_logical_height_for_panel_viewport(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    screens = [
+        SimpleNamespace(
+            x=0,
+            y=0,
+            width=3840,
+            height=2160,
+            frame=SimpleNamespace(Left=0, Top=0, Right=3840, Bottom=2040),
+            scale=1.0,
+        )
+    ]
+    monkeypatch.setitem(sys.modules, "webview", SimpleNamespace(screens=screens))
+    javascript: list[str] = []
+    mutations: list[tuple[str, int, int]] = []
+
+    def evaluate_js(code: str) -> bool:
+        javascript.append(code)
+        return True
+
+    controller = wintray._WindowsTrayController(mock=True, interval=60)
+    controller.window = SimpleNamespace(
+        x=0,
+        y=0,
+        evaluate_js=evaluate_js,
+        resize=lambda width, height: mutations.append(("resize", width, height)),
+        move=lambda x, y: mutations.append(("move", x, y)),
+    )
+    controller._content_height = 1000
+    monkeypatch.setattr(controller, "_window_dpi_scale", lambda: 2.5)
+
+    controller._place_window()
+
+    assert "usageApplyPanelViewport(true)" in javascript[-1]
+    assert mutations == [("resize", 380, 792), ("move", 1144, 12)]
+
+
+def test_high_dpi_panel_scrolls_at_fixed_scale_without_bottom_clipping(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    screens = [
+        SimpleNamespace(
+            x=0,
+            y=0,
+            width=2560,
+            height=1440,
+            frame=SimpleNamespace(Left=0, Top=0, Right=2560, Bottom=1258),
+            scale=1.0,
+        )
+    ]
+    monkeypatch.setitem(sys.modules, "webview", SimpleNamespace(screens=screens))
+    javascript: list[str] = []
+    mutations: list[tuple[str, int, int]] = []
+
+    def evaluate_js(code: str) -> bool:
+        javascript.append(code)
+        return True
+
+    controller = wintray._WindowsTrayController(mock=True, interval=60)
+    controller.window = SimpleNamespace(
+        x=0,
+        y=0,
+        evaluate_js=evaluate_js,
+        resize=lambda width, height: mutations.append(("resize", width, height)),
+        move=lambda *_args: None,
+    )
+    controller._content_height = 1064
+    monkeypatch.setattr(controller, "_window_dpi_scale", lambda: 2.25)
+
+    controller._place_window()
+
+    assert "usageApplyPanelViewport(true)" in javascript[-1]
+    assert mutations == [("resize", 380, 535)]
+
+
+def test_standard_dpi_panel_scrolls_at_fixed_scale(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    screens = [
+        SimpleNamespace(
+            x=0,
+            y=0,
+            width=1920,
+            height=1080,
+            frame=SimpleNamespace(Left=0, Top=0, Right=1920, Bottom=560),
+            scale=1.0,
+        )
+    ]
+    monkeypatch.setitem(sys.modules, "webview", SimpleNamespace(screens=screens))
+    javascript: list[str] = []
+    mutations: list[tuple[str, int, int]] = []
+
+    def evaluate_js(code: str) -> bool:
+        javascript.append(code)
+        return True
+
+    controller = wintray._WindowsTrayController(mock=True, interval=60)
+    controller.window = SimpleNamespace(
+        x=0,
+        y=0,
+        evaluate_js=evaluate_js,
+        resize=lambda width, height: mutations.append(("resize", width, height)),
+        move=lambda *_args: None,
+    )
+    controller._content_height = 1064
+    monkeypatch.setattr(controller, "_window_dpi_scale", lambda: 1.0)
+
+    controller._place_window()
+
+    assert "usageApplyPanelViewport(true)" in javascript[-1]
+    assert mutations == [("resize", 380, 536)]
 
 
 def test_content_height_keeps_the_panels_natural_height(
@@ -1408,7 +1698,7 @@ def test_panel_and_tray_menus_render_the_shared_model(
     assert quit_calls == ["quit"]
 
 
-@pytest.mark.parametrize("_panel_id,_key,filename", wintray.available_panels())
+@pytest.mark.parametrize("_panel_id,_key,filename", wintray.WINDOWS_PANELS)
 def test_panel_body_keeps_refresh_and_quit_escape_controls(
     _panel_id: str, _key: str, filename: str
 ) -> None:
@@ -1849,6 +2139,72 @@ def test_show_panel_places_window_before_showing(
     assert calls == ["place", "show", "inject:True", "refresh"]
 
 
+def test_show_panel_queues_show_after_placement_on_ui_thread(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    callbacks: list[Callable[[], None]] = []
+    calls: list[str] = []
+    native = SimpleNamespace(
+        Handle=SimpleNamespace(ToInt32=lambda: 1),
+        InvokeRequired=True,
+        BeginInvoke=lambda callback: callbacks.append(callback),
+    )
+    controller = wintray._WindowsTrayController(mock=True, interval=60)
+    controller.window = SimpleNamespace(
+        native=native,
+        x=0,
+        y=0,
+        resize=lambda *_args: calls.append("resize"),
+        move=lambda *_args: calls.append("move"),
+        show=lambda: calls.append("show"),
+    )
+    monkeypatch.setitem(sys.modules, "System", SimpleNamespace(Action=lambda callback: callback))
+    monkeypatch.setattr(controller, "_window_dpi_scale", lambda: None)
+    monkeypatch.setattr(controller, "_working_area", lambda: (0, 0, 1000, 800))
+    monkeypatch.setattr(controller, "_work_area_for_point", lambda _point: (0, 0, 1000, 800))
+    monkeypatch.setattr(controller, "inject_state", lambda *, force=False: None)
+    monkeypatch.setattr(controller, "refresh", lambda: None)
+
+    controller.show_panel()
+
+    assert calls == []
+    callbacks.pop()()
+    assert calls == ["resize", "move", "show"]
+
+
+def test_queued_show_panel_does_not_show_after_being_hidden(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    callbacks: list[Callable[[], None]] = []
+    calls: list[str] = []
+    native = SimpleNamespace(
+        Handle=SimpleNamespace(ToInt32=lambda: 1),
+        InvokeRequired=True,
+        BeginInvoke=lambda callback: callbacks.append(callback),
+    )
+    controller = wintray._WindowsTrayController(mock=True, interval=60)
+    controller.window = SimpleNamespace(
+        native=native,
+        x=0,
+        y=0,
+        resize=lambda *_args: calls.append("resize"),
+        move=lambda *_args: calls.append("move"),
+        show=lambda: calls.append("show"),
+    )
+    monkeypatch.setitem(sys.modules, "System", SimpleNamespace(Action=lambda callback: callback))
+    monkeypatch.setattr(controller, "_window_dpi_scale", lambda: None)
+    monkeypatch.setattr(controller, "_working_area", lambda: (0, 0, 1000, 800))
+    monkeypatch.setattr(controller, "_work_area_for_point", lambda _point: (0, 0, 1000, 800))
+    monkeypatch.setattr(controller, "inject_state", lambda *, force=False: None)
+    monkeypatch.setattr(controller, "refresh", lambda: None)
+
+    controller.show_panel()
+    controller.visible = False
+    callbacks.pop()()
+
+    assert calls == ["resize", "move"]
+
+
 def test_attach_schedules_startup_maintenance_after_tray_is_visible(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -1976,7 +2332,7 @@ def test_windows_usage_watch_specs_are_limited_to_usage_sources(
         str(claude_root / "tt-status.json"),
     )
     monkeypatch.setattr(
-        "wintray.watch.history_loader.CLAUDE_PROJECTS_DIR", claude_projects
+        "wintray.watch.claude_config_dirs", lambda: [claude_root]
     )
     monkeypatch.setattr("wintray.watch.codex_loader.SESSIONS_DIR", sessions)
     monkeypatch.setattr("wintray.watch.codex_loader.ARCHIVED_SESSIONS_DIR", archived)
@@ -3024,6 +3380,6 @@ def test_windows_panel_registry_stays_in_sync_with_macos() -> None:
     # Regression: stained_glass and origami landed in panels/__init__.py
     # without being added here, so Windows users couldn't select them and
     # PANEL_HEIGHTS[panel_id] would have raised KeyError on first use.
-    mac_ids = {p for p in panels.panel_ids() if p != "talent_market"}
+    mac_ids = set(panels.panel_ids())
     assert {panel[0] for panel in wintray.WINDOWS_PANELS} == mac_ids
     assert set(wintray.PANEL_HEIGHTS) == mac_ids

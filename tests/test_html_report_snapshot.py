@@ -99,6 +99,10 @@ def _full_report_data() -> dict[str, Any]:
         "period_label": "2026-05-01 -> 2026-05-23",
         "summary": {
             "total_tokens": 2345678,
+            "input_tokens": 250000,
+            "output_tokens": 45678,
+            "cache_creation_tokens": 50000,
+            "cache_read_tokens": 2000000,
             "cost_usd": 45.6789,
             "sessions": 252,
             "messages": 314,
@@ -106,8 +110,28 @@ def _full_report_data() -> dict[str, Any]:
             "total_days": 23,
         },
         "by_agent": [
-            {"name": "Claude", "pct": 62.5, "tokens": 1466049, "cost": 28.55},
-            {"name": "Codex", "pct": 37.5, "tokens": 879629, "cost": 17.13},
+            {
+                "id": "claude-code",
+                "name": "Claude",
+                "pct": 62.5,
+                "tokens": 1466049,
+                "cost": 28.55,
+                "input_tokens": 150000,
+                "output_tokens": 26049,
+                "cache_creation_tokens": 40000,
+                "cache_read_tokens": 1250000,
+            },
+            {
+                "id": "codex",
+                "name": "Codex",
+                "pct": 37.5,
+                "tokens": 879629,
+                "cost": 17.13,
+                "input_tokens": 100000,
+                "output_tokens": 19629,
+                "cache_creation_tokens": 10000,
+                "cache_read_tokens": 750000,
+            },
         ],
         "subscriptions": [
             {"agent": "Claude", "plan": "Max", "since": "2026-01-15"},
@@ -142,6 +166,31 @@ def _full_report_data() -> dict[str, Any]:
         "persona": {
             "hour_histogram": histogram,
             "recent_titles": ["Ship HTML report", "Ignore in current renderer"],
+            "one_pass": {
+                "total": {
+                    "sessions": 478,
+                    "turns": 4460,
+                    "interruptions": 220,
+                    "denied_tools": 130,
+                    "pass_rate": 93.0,
+                },
+                "models": [
+                    {
+                        "model": "claude-opus-5",
+                        "turns": 2481,
+                        "interruptions": 74,
+                        "denied_tools": 87,
+                        "pass_rate": 91.9,
+                    },
+                    {
+                        "model": "claude-sonnet-5",
+                        "turns": 1900,
+                        "interruptions": 45,
+                        "denied_tools": 43,
+                        "pass_rate": 94.2,
+                    },
+                ],
+            },
         },
         "top_sessions": [
             {
@@ -376,6 +425,34 @@ def test_generate_html_matches_golden_snapshot(
     assert html_report.generate_html(data, language=language) == expected
 
 
+def test_generate_html_omits_unpriced_cost_note_when_all_models_are_priced() -> None:
+    data = _full_report_data()
+    for model in data["by_model"]:
+        model["cost_known"] = True
+
+    html = html_report.generate_html(data, language="zh-TW")
+
+    assert "無公開價格" not in html
+
+
+def test_generate_html_shows_formatted_unpriced_cost_note() -> None:
+    data = _full_report_data()
+    data["by_model"].append(
+        {
+            "model": "grok-4",
+            "pct": 0.0,
+            "tokens": 1234567,
+            "cost": 0.0,
+            "cost_known": False,
+        }
+    )
+
+    html = html_report.generate_html(data, language="zh-TW")
+
+    assert "另有 1.2M tokens 無公開價格" in html
+    assert "另有 1234567 tokens 無公開價格" not in html
+
+
 def test_generate_html_contains_snake_easter_egg() -> None:
     html = html_report.generate_html(_empty_report_data(), language="en")
 
@@ -563,6 +640,27 @@ def test_trend_ascii_marks_an_unfinished_final_week_without_a_delta() -> None:
     assert '<span class="delta flat">in progress</span>' in last_row
 
 
+def test_trend_ascii_adds_week_range_tokens_and_cost_tooltip() -> None:
+    daily: list[DailyTrendPoint] = [
+        {"date": "2026-09-01", "tokens": 1_200_000, "cost": 3.45},
+    ]
+
+    html = html_report._trend_ascii(daily, "en", date(2026, 9, 7))
+
+    assert 'class="trend-row" title="2026-09-01 – 2026-09-06 · 1.2M · $3.45"' in html
+
+
+def test_trend_ascii_tooltip_clamps_an_unfinished_final_week_to_the_report_range() -> None:
+    daily: list[DailyTrendPoint] = [
+        {"date": "2026-09-07", "tokens": 100_000, "cost": 1.0},
+        {"date": "2026-09-09", "tokens": 200_000, "cost": 2.0},
+    ]
+
+    html = html_report._trend_ascii(daily, "en", date(2026, 9, 9))
+
+    assert 'title="2026-09-07 – 2026-09-09 · 300.0K · $3.00"' in html
+
+
 def test_trend_ascii_shows_delta_when_final_week_ends_on_sunday() -> None:
     daily: list[DailyTrendPoint] = [
         {"date": "2026-08-17", "tokens": 100, "cost": 0.0},
@@ -664,7 +762,7 @@ def test_one_pass_card_shows_top_five_models_with_provider_colors() -> None:
         }
         for index, turns in enumerate([10, 60, 50, 40, 30, 20])
     ]
-    html = html_report._persona_body(
+    html = html_report._one_pass_card(
         {
             "hour_histogram": histogram,
             "one_pass": {
@@ -682,7 +780,7 @@ def test_one_pass_card_shows_top_five_models_with_provider_colors() -> None:
     )
 
     assert "This period: 7 sessions, 2 interruptions, and 3 blocked tool calls." in html
-    assert html.count('class="one-pass-row"') == 5
+    assert html.count('class="rank-line"') == 5
     assert "claude-model-0" not in html
     assert "claude-model-1" in html
     assert "User turns: 60" in html

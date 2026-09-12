@@ -72,9 +72,14 @@ def _width_mode() -> str:
     return "wide"
 
 
-AGENT_SHORT = {"claude-code": "CC", "codex": "Codex"}
+AGENT_SHORT = {"claude-code": "CC", "codex": "Codex", "antigravity": "AGY", "grok": "Grok"}
 
-AGENT_LABEL = {"claude-code": "Claude Code", "codex": "Codex"}
+AGENT_LABEL = {
+    "claude-code": "Claude Code",
+    "codex": "Codex",
+    "antigravity": "Antigravity",
+    "grok": "Grok",
+}
 
 
 class _HasAgentId(Protocol):
@@ -116,9 +121,9 @@ def _model_short(model: str) -> str:
 
 
 def _fmt_tokens(n: int) -> str:
-    if n >= 1_000_000_000:
+    if n >= 999_950_000:
         return f"{n / 1_000_000_000:.2f}B"
-    if n >= 1_000_000:
+    if n >= 999_950:
         return f"{n / 1_000_000:.1f}M"
     if n >= 1_000:
         return f"{n / 1_000:.1f}K"

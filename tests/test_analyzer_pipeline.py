@@ -16,7 +16,7 @@ import pytest
 
 from adapters.types import AgentInfo, UsageEntry
 from analyzer import persona_loader, reporter
-from loaders import codex_loader, history_loader
+from loaders import cache_quarantine, codex_loader, history_loader
 from menubar import app as menubar
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -260,10 +260,6 @@ def test_html_panels_expose_analyze_action() -> None:
     }
 
     for path in panels_dir.glob("*.html"):
-        # talent_market is a non-quota marketplace panel; it has no analyze/CLI
-        # affordances, only talent-pack/role actions.
-        if path.name == "talent_market.html":
-            continue
         html = (
             payload._load_panel_html(path.name)
             if path.name in card_panel_filenames
@@ -861,6 +857,233 @@ def test_build_year_data_keeps_ledger_days_missing_from_current_entries(
     assert data["wrapped"]["total_tokens"] == 300
     assert data["wrapped"]["active_days"] == 2
     assert ledger["days"]["2026-06-17"]["total_tokens"] == 100
+
+
+def test_read_year_ledger_preserves_days_from_older_schema(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    ledger_path = tmp_path / "year_ledger.json"
+    ledger_path.write_text(
+        json.dumps(
+            {
+                "schema_version": 1,
+                "days": {
+                    "2026-06-17": {
+                        "total_tokens": 100,
+                        "cost": 1.5,
+                        "model_tokens": {"gpt-5": 100},
+                        "project_tokens": {"usage": 100},
+                        "agent_tokens": {"codex": 100},
+                        "sessions": 2,
+                    },
+                    "2026-06-18": {
+                        "total_tokens": 200,
+                        "cost": 2.5,
+                        "model_tokens": {"claude-sonnet": 200},
+                        "project_tokens": {"usage": 200},
+                        "agent_tokens": {"claude-code": 200},
+                        "sessions": 3,
+                    },
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(reporter, "YEAR_LEDGER_PATH", ledger_path)
+    monkeypatch.setattr(reporter, "_YEAR_LEDGER_SCHEMA", 2)
+
+    ledger = reporter._read_year_ledger()
+
+    assert ledger["schema_version"] == 2
+    assert set(ledger["days"]) == {"2026-06-17", "2026-06-18"}
+    assert ledger["days"]["2026-06-17"]["agent_tokens"] == {"codex": 100}
+    assert ledger["days"]["2026-06-18"]["total_tokens"] == 200
+
+
+def test_read_year_ledger_preserves_older_days_without_model_tokens(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    ledger_path = tmp_path / "year_ledger.json"
+    ledger_path.write_text(
+        json.dumps(
+            {
+                "schema_version": 1,
+                "days": {
+                    "2026-06-17": {
+                        "total_tokens": 100,
+                        "cost": 1.5,
+                        "sessions": 2,
+                    },
+                    "2026-06-18": {
+                        "total_tokens": 200,
+                        "cost": 2.5,
+                        "model_tokens": {"claude-sonnet": 200},
+                        "sessions": 3,
+                    },
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(reporter, "YEAR_LEDGER_PATH", ledger_path)
+    monkeypatch.setattr(reporter, "_YEAR_LEDGER_SCHEMA", 2)
+
+    ledger = reporter._read_year_ledger()
+
+    assert set(ledger["days"]) == {"2026-06-17", "2026-06-18"}
+    assert ledger["days"]["2026-06-17"]["model_tokens"] == {}
+
+
+def test_read_year_ledger_merges_git_project_names(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    ledger_path = tmp_path / "year_ledger.json"
+    ledger_path.write_text(
+        json.dumps(
+            {
+                "schema_version": reporter._YEAR_LEDGER_SCHEMA,
+                "days": {
+                    "2026-06-17": {
+                        "total_tokens": 150,
+                        "cost": 1.5,
+                        "model_tokens": {"model.git": 150},
+                        "project_tokens": {"obsidian00": 100, "obsidian00.git": 50},
+                        "agent_tokens": {"agent.git": 150},
+                        "sessions": 2,
+                    },
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(reporter, "YEAR_LEDGER_PATH", ledger_path)
+
+    ledger = reporter._read_year_ledger()
+
+    assert ledger["days"]["2026-06-17"]["project_tokens"] == {"obsidian00": 150}
+    assert ledger["days"]["2026-06-17"]["model_tokens"] == {"model.git": 150}
+    assert ledger["days"]["2026-06-17"]["agent_tokens"] == {"agent.git": 150}
+
+
+def test_read_year_ledger_preserves_dot_git_project_name(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    ledger_path = tmp_path / "year_ledger.json"
+    ledger_path.write_text(
+        json.dumps(
+            {
+                "schema_version": reporter._YEAR_LEDGER_SCHEMA,
+                "days": {
+                    "2026-06-17": {
+                        "total_tokens": 10,
+                        "cost": 0.0,
+                        "project_tokens": {".git": 10},
+                        "sessions": 1,
+                    },
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(reporter, "YEAR_LEDGER_PATH", ledger_path)
+
+    ledger = reporter._read_year_ledger()
+
+    assert ledger["days"]["2026-06-17"]["project_tokens"] == {".git": 10}
+
+
+def test_read_year_ledger_quarantines_invalid_json(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    ledger_path = tmp_path / "year_ledger.json"
+    ledger_path.write_text("{not-json", encoding="utf-8")
+    quarantine_dir = tmp_path / "quarantine"
+    monkeypatch.setattr(reporter, "YEAR_LEDGER_PATH", ledger_path)
+    monkeypatch.setattr(cache_quarantine, "QUARANTINE_DIR", quarantine_dir)
+    quarantine_calls: list[tuple[Path, str]] = []
+    quarantine = cache_quarantine.quarantine
+
+    def tracked_quarantine(path: Path, reason: str) -> None:
+        quarantine_calls.append((path, reason))
+        quarantine(path, reason)
+
+    monkeypatch.setattr(cache_quarantine, "quarantine", tracked_quarantine)
+
+    ledger = reporter._read_year_ledger()
+
+    assert ledger == reporter._empty_year_ledger()
+    assert quarantine_calls == [(ledger_path, "year ledger unreadable")]
+
+
+def test_read_year_ledger_quarantines_non_dict_days(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    ledger_path = tmp_path / "year_ledger.json"
+    ledger_path.write_text(
+        json.dumps({"schema_version": reporter._YEAR_LEDGER_SCHEMA, "days": []}),
+        encoding="utf-8",
+    )
+    quarantine_dir = tmp_path / "quarantine"
+    monkeypatch.setattr(reporter, "YEAR_LEDGER_PATH", ledger_path)
+    monkeypatch.setattr(cache_quarantine, "QUARANTINE_DIR", quarantine_dir)
+    quarantine_calls: list[tuple[Path, str]] = []
+    quarantine = cache_quarantine.quarantine
+
+    def tracked_quarantine(path: Path, reason: str) -> None:
+        quarantine_calls.append((path, reason))
+        quarantine(path, reason)
+
+    monkeypatch.setattr(cache_quarantine, "quarantine", tracked_quarantine)
+
+    ledger = reporter._read_year_ledger()
+
+    assert ledger == reporter._empty_year_ledger()
+    assert quarantine_calls == [(ledger_path, "year ledger schema unreadable")]
+
+
+def test_read_year_ledger_quarantines_when_all_days_are_unparseable(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    ledger_path = tmp_path / "year_ledger.json"
+    ledger_path.write_text(
+        json.dumps(
+            {
+                "schema_version": reporter._YEAR_LEDGER_SCHEMA,
+                "days": {
+                    "not-a-date": {
+                        "total_tokens": 100,
+                        "cost": 1.5,
+                        "sessions": 2,
+                    },
+                    "2026-06-18": {"total_tokens": "invalid"},
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    quarantine_dir = tmp_path / "quarantine"
+    monkeypatch.setattr(reporter, "YEAR_LEDGER_PATH", ledger_path)
+    monkeypatch.setattr(cache_quarantine, "QUARANTINE_DIR", quarantine_dir)
+    quarantine_calls: list[tuple[Path, str]] = []
+    quarantine = cache_quarantine.quarantine
+
+    def tracked_quarantine(path: Path, reason: str) -> None:
+        quarantine_calls.append((path, reason))
+        quarantine(path, reason)
+
+    monkeypatch.setattr(cache_quarantine, "quarantine", tracked_quarantine)
+
+    ledger = reporter._read_year_ledger()
+
+    assert ledger == reporter._empty_year_ledger()
+    assert quarantine_calls == [(ledger_path, "year ledger days unparseable")]
 
 
 def test_contribution_level_uses_quantile_thresholds_for_edges() -> None:

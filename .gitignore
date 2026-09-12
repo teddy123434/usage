@@ -18,9 +18,6 @@ dist/
 winbuild/
 usage-windows.zip
 usage-windows.zip.sha256
-# Compiled instate-cli binary (built from the separate ~/Developer/instate project).
-# Contains private role content — must never enter usage's public git history.
-vendor/
 .pytest_cache/
 .coverage
 .antigravitycli/
@@ -33,3 +30,9 @@ SESSION.md
 
 # Misplaced Claude auto-memory (real location is ~/.claude/projects/.../memory/)
 /memory/
+
+# 子代理每次派工的工作筆記，不進版本庫
+implementation-notes.md
+
+# 派工任務書（本機暫存，不進版本庫）
+.task-*.md

@@ -20,7 +20,7 @@
 [![OpenSSF 最佳實踐](https://www.bestpractices.dev/projects/13538/badge)](https://www.bestpractices.dev/projects/13538)
 
 <p align="center">
-  <img src="showcase.en.png" alt="usage — 把 Claude Code、Codex 與 Antigravity 的額度釘在 macOS 選單列" width="820">
+  <img src="showcase-v3.en.png" alt="usage — 把 Claude Code、Codex 與 Antigravity 的額度釘在 macOS 選單列" width="820">
 </p>
 
 Claude Code 與 Codex 的數字是被動讀自你機器上原本就在寫的紀錄檔，因此**看額度這件事永遠不會呼叫 Anthropic 或 OpenAI 的 LLM API**，也不會消耗你的任何 token。Antigravity 是唯一的例外：它的額度來自 Google 官方額度端點，用的是 Antigravity CLI 本來就存在本機的登入身分——這只是一次元資料查詢，同樣不會消耗你的模型額度。
@@ -58,8 +58,6 @@ brew install --cask aqua5230/usage/usage
 
 ### AI 協作
 
-- **AI 人才市場：** 將整個 AI 團隊帶進 Claude Code。瀏覽並一鍵將精選 subagent persona 安裝到 `~/.claude/agents/`，全程透過內建 CLI 在本機完成。
-- **AI 圓桌討論：** 開一個獨立視窗，讓 Claude Code、Codex、Antigravity 進行多輪討論——自選參與者、模型與辯論風格，開始前就看得到大約會花多少 token。可以在輪間插話引導方向，共識計票看得出誰不同意，並讓討論在全體同意時提早收尾。位子可以戴上 AI 人才市場的專家角色，也能附上唯讀資料夾讓參與者參考真實檔案。
 - **AI 更新日報：** 開啟每天自動更新的公開[網頁](https://aqua5230.github.io/ai-updates/)，涵蓋 Claude Code、Codex、Antigravity 三套工具、保留完整歷史。已審核的更新顯示五語白話版，未審核的顯示官方原文。
 
 ### 報告與洞察
@@ -130,7 +128,7 @@ Windows 可完整使用核心功能：系統匣 UI、Claude Code 狀態列 hook 
 
 系統匣圖示會隨 Claude 額度百分比更新；提示文字摘要 Claude 與 Codex 的各視窗。左鍵會用 WebView2 開啟與 macOS 相同的 14 款主題面板（預設加另外十三款）；右鍵只有「重設面板位置」與「結束」；面板切換、重新整理、開機自啟與檢查更新都在面板選單。
 
-Windows 的差異：面板開在工作區右下角，而非貼齊系統匣圖示；更新提示使用系統 Yes/No 對話框；AI 人才市場與 AI 圓桌討論面板僅提供 macOS。
+Windows 的差異：面板開在工作區右下角，而非貼齊系統匣圖示；更新提示使用系統 Yes/No 對話框。
 
 ### 程式碼簽章政策
 
@@ -189,8 +187,6 @@ Free code signing provided by [SignPath.io](https://about.signpath.io/), certifi
 | Grok CLI 支援 | ✅ | — | — |
 | Claude Code 與 Codex 服務狀態警示 | ✅ | — | — |
 | HTML 深度報告與 UI 面板 | ✅ | ✅ | — |
-| AI 人才市場 | 僅 macOS | — | — |
-| AI 圓桌討論 | 僅 macOS | — | — |
 | AI 更新日報 | ✅ | — | — |
 | 進度管家與省 token 模式 | ✅ | — | — |
 | Token 浪費健檢 | ✅ | — | — |

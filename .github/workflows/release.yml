@@ -101,7 +101,6 @@ jobs:
           # extensions as built-ins with no __file__, which crashes py2app.
           # Force uv to use the actions/setup-python interpreter instead of
           # downloading its own.
-          INSTATE_CLI_TOKEN: ${{ secrets.INSTATE_CLI_TOKEN }}
           UV_PYTHON_PREFERENCE: only-system
         run: ./scripts/build_app.sh
 
@@ -135,6 +134,9 @@ jobs:
           verify_file dist/usage.app/Contents/Resources/claude.webp
           verify_file dist/usage.app/Contents/Resources/codex.webp
           verify_file dist/usage.app/Contents/Info.plist
+
+      - name: Smoke-test the .app bundle
+        run: ./scripts/smoke_test_app.sh dist/usage.app
 
       - name: Zip .app
         run: |

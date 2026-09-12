@@ -481,7 +481,8 @@ def test_quota_row_uses_burn_warning_when_forecast_exceeds_risk_threshold() -> N
     )
 
     assert row.warning is True
-    assert row.reset_text == "⚠ 按目前速度 18分鐘 就會用完(重置還要 51分鐘)"
+    assert row.reset_text == "⚠ 18分鐘後用完 · 重置 51分鐘"
+    assert row.reset_text_compact == "⚠ 18分鐘後用完"
 
 def test_quota_row_keeps_reset_text_when_forecast_is_not_before_reset() -> None:
     row = menubar._quota_row(
@@ -496,6 +497,7 @@ def test_quota_row_keeps_reset_text_when_forecast_is_not_before_reset() -> None:
 
     assert row.warning is False
     assert row.reset_text == "重置 18分鐘"
+    assert row.reset_text_compact == ""
 
 
 def test_quota_row_keeps_reset_text_when_forecast_exceeds_warning_max() -> None:
@@ -618,7 +620,6 @@ def test_switch_panel_menu_contains_update_items(monkeypatch: pytest.MonkeyPatch
     panels = [
         SimpleNamespace(id="classic", i18n_key="panel_default_name"),
         SimpleNamespace(id="matrix", i18n_key="panel_matrix"),
-        SimpleNamespace(id="talent_market", i18n_key="panel_talent_market"),
     ]
 
     monkeypatch.setattr(menubar_menu, "NSMenu", _FakeMenu)
@@ -646,18 +647,10 @@ def test_switch_panel_menu_contains_update_items(monkeypatch: pytest.MonkeyPatch
     # The auto-update row is gone — update checks just stay on by default.
     assert "Automatically Check for Updates" not in main_titles
     assert "Usage Alert Notifications" in main_titles
-    talent_market = next(item for item in main_menu.items if item.title == "AI Talent Market")
-    assert talent_market.action == "toggleTalentMarket:"
-    assert talent_market.representedObject() == "talent_market"
-    assert talent_market.state == 0
     daily_item = next(item for item in main_menu.items if item.title == "AI Update Daily")
     assert daily_item.action == "toggleAiDaily:"
     assert daily_item.representedObject() is None
     assert daily_item.state == 0
-    discussion_item = next(item for item in main_menu.items if item.title == "AI Council")
-    assert discussion_item.action == "toggleDiscussion:"
-    assert discussion_item.representedObject() is None
-    assert discussion_item.state == 0
 
     # Panel themes are collapsed into a submenu, not listed inline on the main menu.
     assert "Default" not in main_titles
@@ -1029,7 +1022,7 @@ def test_statusline_enabled_detects_usage_hook(
         json.dumps({"statusLine": {"type": "command", "command": "python3 usage-statusline.py"}}),
         encoding="utf-8",
     )
-    monkeypatch.setattr("menubar.app.os.path.expanduser", lambda value: str(settings))
+    monkeypatch.setattr(statusline_settings, "_claude_settings_path", lambda: settings)
 
     assert menubar._statusline_enabled() is True
 
@@ -1046,7 +1039,7 @@ def test_statusline_enabled_detects_external_hook(
         json.dumps({"statusLine": {"type": "command", "command": f"python3 {legacy_name}"}}),
         encoding="utf-8",
     )
-    monkeypatch.setattr("menubar.app.os.path.expanduser", lambda value: str(settings))
+    monkeypatch.setattr(statusline_settings, "_claude_settings_path", lambda: settings)
 
     assert menubar._statusline_enabled() is True
 
@@ -1069,7 +1062,12 @@ def test_toggle_statusline_preserves_forwarder_settings(
     }
     settings.write_text(json.dumps(original, indent=2, ensure_ascii=False), encoding="utf-8")
     original_text = settings.read_text(encoding="utf-8")
-    monkeypatch.setattr("menubar.app.os.path.expanduser", lambda value: str(settings))
+    # The forwarder target must exist, or re-enabling falls through to a fresh setup().
+    forwarder = claude_dir / ("tt" + "-statusline-usage-statusline-forward.py")
+    forwarder.write_text("", encoding="utf-8")
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.setenv("USERPROFILE", str(tmp_path))
+    monkeypatch.setattr(statusline_settings, "_claude_settings_path", lambda: settings)
     monkeypatch.setattr("installer.setup_hook.is_agy_setup", lambda: False)
 
     action, exit_code = menubar._toggle_statusline_settings()
@@ -1098,7 +1096,7 @@ def test_forwarder_prompt_keep_sets_ack_once(
         json.dumps({"statusLine": {"type": "command", "command": "python3 ccusage.py"}}),
         encoding="utf-8",
     )
-    monkeypatch.setattr(setup_hook, "CLAUDE_SETTINGS", settings)
+    monkeypatch.setattr(setup_hook, "_claude_settings_path", lambda: settings)
     calls = {"alerts": 0, "setup": 0}
 
     class FakeAlert:
@@ -1154,7 +1152,7 @@ def test_forwarder_prompt_enable_calls_forwarder_setup(
         json.dumps({"statusLine": {"type": "command", "command": "python3 lord-kali.py"}}),
         encoding="utf-8",
     )
-    monkeypatch.setattr(setup_hook, "CLAUDE_SETTINGS", settings)
+    monkeypatch.setattr(setup_hook, "_claude_settings_path", lambda: settings)
     calls: list[bool] = []
 
     class FakeAlert:
@@ -1463,7 +1461,7 @@ def test_saved_content_height_skips_panels_without_measurements(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     calls: list[tuple[str, object]] = []
-    panel = SimpleNamespace(id="talent_market", _content_height_reports_available=False)
+    panel = SimpleNamespace(id="classic", _content_height_reports_available=False)
     view = SimpleNamespace(
         evaluateJavaScript_completionHandler_=lambda script, completion: calls.append(
             (script, completion)
@@ -2822,44 +2820,6 @@ def test_switching_visible_panel_reuses_popover(monkeypatch: pytest.MonkeyPatch)
     assert delegate.popover.shown == 0
 
 
-def test_toggle_talent_market_switches_back_to_previous_panel() -> None:
-    delegate = menubar.AppDelegate.alloc().initWithMock_interval_(True, 60)
-    delegate.active_panel = SimpleNamespace(id="matrix")
-
-    switched: list[str] = []
-
-    def fake_set_active_panel_id(panel_id: str) -> None:
-        switched.append(panel_id)
-        delegate.active_panel = SimpleNamespace(id=panel_id)
-
-    delegate._set_active_panel_id = fake_set_active_panel_id
-
-    menubar.AppDelegate.toggleTalentMarket_(delegate, object())
-    menubar.AppDelegate.toggleTalentMarket_(delegate, object())
-
-    assert switched == ["talent_market", "matrix"]
-    assert delegate._pre_talent_panel_id == "matrix"
-    assert delegate._switch_menu_action_taken is True
-
-
-def test_toggle_talent_market_falls_back_to_classic_without_previous_panel() -> None:
-    delegate = menubar.AppDelegate.alloc().initWithMock_interval_(True, 60)
-    delegate.active_panel = SimpleNamespace(id="talent_market")
-    delegate._pre_talent_panel_id = None
-
-    switched: list[str] = []
-
-    def fake_set_active_panel_id(panel_id: str) -> None:
-        switched.append(panel_id)
-
-    delegate._set_active_panel_id = fake_set_active_panel_id
-
-    menubar.AppDelegate.toggleTalentMarket_(delegate, object())
-
-    assert switched == ["classic"]
-    assert delegate._switch_menu_action_taken is True
-
-
 def test_daily_link_closes_popover_then_opens_browser(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -2875,48 +2835,6 @@ def test_daily_link_closes_popover_then_opens_browser(
 
     assert events == ["close", "https://aqua5230.github.io/ai-updates/"]
     assert delegate._switch_menu_action_taken is True
-
-
-def test_discussion_action_reuses_controller_and_closes_popover() -> None:
-    events: list[str] = []
-
-    class FakeController:
-        def show(self, close_popover: object) -> None:
-            assert callable(close_popover)
-            close_popover()
-            events.append("show")
-
-    delegate = menubar.AppDelegate.alloc().initWithMock_interval_(True, 60)
-    delegate._discussion_window_controller = FakeController()
-    delegate.popover = SimpleNamespace(
-        isVisible=lambda: True,
-        close=lambda: events.append("close"),
-    )
-
-    menubar.AppDelegate.toggleDiscussion_(delegate, object())
-
-    assert events == ["close", "show"]
-    assert delegate._switch_menu_action_taken is True
-
-
-def test_discussion_menubar_wiring_stays_thin_and_shuts_down() -> None:
-    source = Path(menubar.__file__).read_text(encoding="utf-8")
-    action_source = source.split("    def toggleDiscussion_", 1)[1].split(
-        "\n    def ",
-        1,
-    )[0]
-    terminate_source = source.split("    def applicationWillTerminate_", 1)[1].split(
-        "\n    def ",
-        1,
-    )[0]
-
-    assert "DiscussionWindowController" in action_source
-    assert ".show(" in action_source
-    assert "close_popover=self._close_popover_after_menu" in action_source
-    assert "ParticipantSpec" not in action_source
-    assert "run_streaming" not in action_source
-    assert "subprocess" not in action_source
-    assert "_discussion_window_controller.shutdown()" in terminate_source
 
 
 def test_state_from_outcome_replaces_claude_reset_with_warning(
@@ -2947,7 +2865,7 @@ def test_state_from_outcome_replaces_claude_reset_with_warning(
     state = _build_popover_state(delegate, outcome, _codex_rows(delegate)[0])
 
     assert state.claude_session.warning is True
-    assert state.claude_session.reset_text == "⚠ 按目前速度 18分鐘 就會用完(重置還要 51分鐘)"
+    assert state.claude_session.reset_text == "⚠ 18分鐘後用完 · 重置 51分鐘"
 
 
 def test_codex_rows_ignores_invalid_stale_timestamp(

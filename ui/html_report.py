@@ -30,23 +30,19 @@ from analyzer.reporter import (
 
 from i18n import _t as _i18n_t, packaged_resource_path
 from usage_common.usage_lang import detect_lang
-from ui.report_charts import render_daily_sparkline, render_share_bar, render_trend_bar
-from ui.report_scripts import HTML_TO_IMAGE_UMD, REPORT_JS_TEMPLATE
+from ui.report_charts import render_share_bar, render_trend_bar
+from ui.report_scripts import HTML_TO_IMAGE_UMD, REPORT_JS_TEMPLATE, REPORT_THEME_INIT_JS
 from ui.report_styles import REPORT_CSS
 
 
-
-# Rough USD→TWD rate for the zh-TW cost hint only. A display estimate (prefixed
-# with ≈), not a live FX lookup — bump it if it drifts too far from reality.
-_USD_TO_TWD = 32
 
 def _t(lang: str, key: str, **kwargs: object) -> str:
     return _i18n_t(lang, f"report_{key}", **kwargs)
 
 def _fmt_tokens(value: int) -> str:
-    if value >= 1_000_000_000:
+    if value >= 999_950_000:
         return f"{value / 1_000_000_000:.2f}B"
-    if value >= 1_000_000:
+    if value >= 999_950:
         return f"{value / 1_000_000:.1f}M"
     if value >= 1_000:
         return f"{value / 1_000:.1f}K"
@@ -231,6 +227,20 @@ def _model_share_color(model: object) -> str:
     return "#8b8577"
 
 
+_AGENT_COLORS = {
+    "claude-code": "#5abfa0",
+    "codex": "#e0885a",
+    "antigravity": "#8f86c9",
+    "grok": "#78cdb2",
+}
+
+
+def _agent_share_color(agent_id: object) -> str:
+    # Keyed on the tool, not its rank — the ordering is by tokens, so a palette
+    # indexed by position would repaint every tool whenever two swap places.
+    return _AGENT_COLORS.get(str(agent_id), "#8b8577")
+
+
 def _trend_delta(current: int, previous: int, lang: str) -> tuple[str, str]:
     if previous == 0:
         if current == 0:
@@ -248,9 +258,18 @@ def _trend_delta(current: int, previous: int, lang: str) -> tuple[str, str]:
 def _trend_ascii(daily: list[DailyTrendPoint], lang: str, date_to: date) -> str:
     weekly = _weekly_trend(daily)
     max_tokens = max((int(week["tokens"]) for week in weekly), default=0)
+    data_start = min((_parse_daily_date(day["date"]) for day in daily), default=None)
     rows = []
     for idx, week in enumerate(weekly):
         tokens = int(week["tokens"])
+        cost = float(week["cost"])
+        week_start = date.fromisocalendar(int(week["year"]), int(week["week"]), 1)
+        week_end = min(date.fromisocalendar(int(week["year"]), int(week["week"]), 7), date_to)
+        if data_start is not None:
+            week_start = max(week_start, data_start)
+        tooltip = _escape(
+            f"{week_start.isoformat()} – {week_end.isoformat()} · {_fmt_tokens(tokens)} · {_fmt_cost(cost)}"
+        )
         delta_html = '<span class="delta flat"></span>'
         if idx == len(weekly) - 1 and _week_is_in_progress(week, date_to):
             delta_html = f'<span class="delta flat">{_escape(_t(lang, "trend_week_in_progress"))}</span>'
@@ -258,7 +277,7 @@ def _trend_ascii(daily: list[DailyTrendPoint], lang: str, date_to: date) -> str:
             delta_class, delta_label = _trend_delta(tokens, int(weekly[idx - 1]["tokens"]), lang)
             delta_html = f'<span class="delta {delta_class}">{_escape(delta_label)}</span>'
         rows.append(
-            '<div class="trend-row">'
+            f'<div class="trend-row" title="{tooltip}">'
             f'<span class="week">W{int(week["week"])}</span>'
             f'{render_trend_bar(tokens, max_tokens)}'
             f'<em>{_fmt_tokens(tokens)}</em>'
@@ -306,6 +325,8 @@ def _one_pass_card(persona: Mapping[str, object], lang: str) -> str:
     raw_models = raw_stats.get("models")
     if not isinstance(raw_total, Mapping) or not isinstance(raw_models, list):
         return ""
+    if _nonnegative_int(raw_total.get("turns")) <= 0:
+        return ""
 
     models: list[tuple[str, int, float]] = []
     for raw_model in raw_models:
@@ -316,18 +337,20 @@ def _one_pass_card(persona: Mapping[str, object], lang: str) -> str:
         pass_rate = _bounded_pct(raw_model.get("pass_rate"))
         if turns > 0:
             models.append((model, turns, pass_rate))
-    models.sort(key=lambda item: (-item[1], item[0]))
+    models.sort(key=lambda item: (-item[2], item[0]))
     if not models:
         return ""
 
     rows = []
     for model, turns, pass_rate in models[:5]:
         rows.append(
-            '<div class="one-pass-row">'
+            '<div class="rank-line">'
+            '<span class="arrow">&rarr;</span>'
             f'<span class="name">{_escape(_display_name(model, lang))}'
             f'{render_share_bar(pass_rate, _model_share_color(model))}</span>'
-            f'<span class="turns">{_escape(_t(lang, "persona_one_pass_turns", turns=turns))}</span>'
-            f'<strong>{pass_rate:.1f}%</strong>'
+            f'<span class="pct" data-label="{_escape(_t(lang, "persona_one_pass_title"))}">{pass_rate:.1f}%</span>'
+            f'<span class="tokens" data-label="">'
+            f'{_escape(_t(lang, "persona_one_pass_turns", turns=turns))}</span>'
             "</div>"
         )
 
@@ -340,9 +363,8 @@ def _one_pass_card(persona: Mapping[str, object], lang: str) -> str:
     )
     return (
         '<div class="persona-card one-pass-card">'
-        f'<h3>{_escape(_t(lang, "persona_one_pass_title"))}</h3>'
         f'<p class="persona-caption">{_escape(summary)}</p>'
-        f'<div class="one-pass-list">{"".join(rows)}</div>'
+        f'<div class="rank-list">{"".join(rows)}</div>'
         "</div>"
     )
 
@@ -389,7 +411,7 @@ def _persona_body(persona: Mapping[str, object] | None, lang: str) -> str:
         f'{_hour_histogram_html(values, lang)}'
         '</div>'
     )
-    return active_hours + _one_pass_card(persona, lang)
+    return active_hours
 
 
 def _donut_svg(items: list[tuple[str, int]], lang: str, *, total: int) -> str:
@@ -462,10 +484,11 @@ def _tools_body(
         plan_html = f'<span class="sub-plan">{_escape(str(plan))}</span>' if plan else ""
         return plan_html + since_html
 
-    def _row(name: str, plan_html: str, stats_html: str) -> str:
+    def _row(name: str, plan_html: str, stats_html: str, share_html: str = "") -> str:
         return (
             '<div class="tool-row">'
-            f'<div class="tool-head"><span class="sub-agent">{_escape(name)}</span>{plan_html}</div>'
+            f'<div class="tool-head"><span class="sub-agent">{_escape(name)}</span>{plan_html}'
+            f"{share_html}</div>"
             f"{stats_html}"
             "</div>"
         )
@@ -478,7 +501,14 @@ def _tools_body(
             f'<span class="tokens" data-label="{_escape(_t(lang, "tokens"))}">{_fmt_tokens(int(agent["tokens"]))}</span>'
             f'<span class="cost" data-label="{_escape(_t(lang, "cost"))}">{_fmt_cost(float(agent["cost"]))}</span>'
         )
-        rows.append(_row(name, _plan_html(by_name.get(str(agent["name"]))), stats_html))
+        rows.append(
+            _row(
+                name,
+                _plan_html(by_name.get(str(agent["name"]))),
+                stats_html,
+                render_share_bar(float(agent["pct"]), _agent_share_color(agent["id"])),
+            )
+        )
 
     # Subscriptions for tools that have no usage in this period still get a card.
     for sub_name, sub in by_name.items():
@@ -528,8 +558,7 @@ def _narrative(data: ReportData, lang: str, is_empty: bool) -> str:
 
 def _cost_value(cost_usd: float, lang: str) -> tuple[str, str]:
     main = _fmt_cost(cost_usd)
-    sub = f"≈ NT${cost_usd * _USD_TO_TWD:,.0f}" if lang == "zh-TW" else ""
-    return main, sub
+    return main, ""
 
 
 def _render_cards_section(cards: list[tuple[str, str, str]]) -> str:
@@ -554,14 +583,24 @@ def _summary_cards(data: ReportData, lang: str) -> list[tuple[str, str, str]]:
     tokens_sub = f"≈ {_fmt_tokens(total_tokens)}"
 
     if comparison.get("has_prev"):
-        vs_prev_key = "kpi_vs_prev_month" if comparison.get("period") == "month" else "kpi_vs_prev_week"
-        vs_prev_label = _t(lang, vs_prev_key)
+        vs_prev_label = _t(lang, "kpi_vs_prev_period")
         tokens_delta = _delta_sub(total_tokens, float(comparison.get("prev_tokens", 0)), vs_prev_label)
         if tokens_delta:
             tokens_sub = f"{tokens_sub} · {tokens_delta}"
         cost_delta = _delta_sub(cost_usd, float(comparison.get("prev_cost", 0)), vs_prev_label)
         if cost_delta:
             cost_sub = f"{cost_sub} · {cost_delta}" if cost_sub else cost_delta
+
+    unpriced_tokens = sum(
+        int(model["tokens"])
+        for model in data["by_model"]
+        if not model.get("cost_known", True) and int(model["tokens"]) > 0
+    )
+    if unpriced_tokens:
+        cost_unpriced = _t(
+            lang, "kpi_cost_unpriced", tokens=_fmt_tokens(unpriced_tokens)
+        )
+        cost_sub = f"{cost_sub} · {cost_unpriced}" if cost_sub else cost_unpriced
 
     cards = [
         (_t(lang, "kpi_tokens"), f"{total_tokens:,}", tokens_sub),
@@ -589,7 +628,10 @@ def _render_header(data: ReportData, lang: str, title: str, generated_at: str, i
     </div>
     <div class="header-actions">
       <div class="meta">{html.escape(_t(lang, "generated"))} {html.escape(generated_at)}<br>usage {_escape(_t(lang, "version"))} {_escape(_version())}</div>
+      <div class="header-buttons">
+        <button class="share-trigger" type="button" data-theme-toggle data-light-label="{html.escape(_t(lang, 'theme_light'))}" data-dark-label="{html.escape(_t(lang, 'theme_dark'))}" data-light-aria="{html.escape(_t(lang, 'theme_switch_light'))}" data-dark-aria="{html.escape(_t(lang, 'theme_switch_dark'))}" aria-label="{html.escape(_t(lang, 'theme_switch_light'))}"><span data-theme-icon aria-hidden="true">☀</span><span data-theme-label>{html.escape(_t(lang, 'theme_light'))}</span></button>
       <button class="share-trigger" type="button" data-share-open><span aria-hidden="true">↗</span>{html.escape(_t(lang, "share_button_label"))}</button>
+      </div>
     </div>
   </header>"""
 
@@ -665,12 +707,77 @@ def _render_model_section(data: Mapping[str, Any], lang: str) -> str:
         if model_rows
         else _empty_line(_t(lang, "empty_models"))
     )
-    return _section(_t(lang, "model_section"), model_body)
+    return _section(_t(lang, "model_section"), model_body, "model-section")
 
 
 def _render_tools_section(data: Mapping[str, Any], lang: str) -> str:
     tools_body = _tools_body(data.get("subscriptions", []), data.get("by_agent", []), lang)
     return _section(_t(lang, "tools_section"), tools_body, "tools-section")
+
+
+def _cache_hit_rate(row: Mapping[str, Any]) -> float | None:
+    cache_read = int(row.get("cache_read_tokens", 0))
+    context_tokens = (
+        int(row.get("input_tokens", 0))
+        + int(row.get("cache_creation_tokens", 0))
+        + cache_read
+    )
+    return None if context_tokens == 0 else cache_read / context_tokens * 100
+
+
+def _render_composition_section(data: Mapping[str, Any], lang: str) -> str:
+    summary = data["summary"]
+    parts = [
+        ("input", int(summary.get("input_tokens", 0))),
+        ("output", int(summary.get("output_tokens", 0))),
+        ("cache_write", int(summary.get("cache_creation_tokens", 0))),
+        ("cache_read", int(summary.get("cache_read_tokens", 0))),
+    ]
+    total = sum(tokens for _key, tokens in parts)
+    if total <= 0:
+        return ""
+    colors = {key: _PALETTE[index] for index, (key, _tokens) in enumerate(parts)}
+
+    # One row per class rather than a single stacked bar: cache reads dominate the
+    # total so heavily that every other segment collapses into an unreadable sliver.
+    rows = "".join(
+        '<div class="rank-line">'
+        '<span class="arrow">&rarr;</span>'
+        f'<span class="name">{_escape(_t(lang, f"composition_{key}"))}'
+        f'{render_share_bar(tokens / total * 100, colors[key])}</span>'
+        f'<span class="pct" data-label="{_escape(_t(lang, "share"))}">'
+        f'{tokens / total * 100:>5.1f}%</span>'
+        f'<span class="tokens" data-label="{_escape(_t(lang, "tokens"))}">'
+        f'{_fmt_tokens(tokens)}</span>'
+        "</div>"
+        for key, tokens in sorted(parts, key=lambda item: -item[1])
+        if tokens > 0
+    )
+
+    agent_rows = []
+    for agent in sorted(
+        data.get("by_agent", []),
+        key=lambda row: (_cache_hit_rate(row) is None, -(_cache_hit_rate(row) or 0.0)),
+    ):
+        rate = _cache_hit_rate(agent)
+        agent_rows.append(
+            '<div class="rank-line">'
+            '<span class="arrow">&rarr;</span>'
+            f'<span class="name">{_escape(_display_name(agent["name"], lang))}'
+            f'{render_share_bar(rate or 0.0, _PALETTE[3])}</span>'
+            f'<span class="pct" data-label="{_escape(_t(lang, "composition_hit_rate"))}">'
+            f'{"&mdash;" if rate is None else f"{rate:>5.1f}%"}</span>'
+            "</div>"
+        )
+
+    body = (
+        f'<div class="rank-list">{rows}</div>'
+        f'<p class="composition-hint">{_escape(_t(lang, "composition_hint"))}</p>'
+        f'<div class="rank-head"><span></span>'
+        f'<span>{_escape(_t(lang, "composition_hit_rate"))}</span></div>'
+        f'<div class="rank-list">{"".join(agent_rows)}</div>'
+    )
+    return _section(_t(lang, "composition_section"), body, "composition-section")
 
 
 def _render_insight_note(
@@ -748,8 +855,7 @@ def _render_insight_surface(data: Mapping[str, Any], lang: str) -> str:
 
 def _render_trend_section(data: Mapping[str, Any], lang: str, date_to: date) -> str:
     daily = data.get("daily_trend", [])
-    sparkline = render_daily_sparkline(daily, _t(lang, "trend_section"))
-    return _section(_t(lang, "trend_section"), sparkline + _trend_ascii(daily, lang, date_to))
+    return _section(_t(lang, "trend_section"), _trend_ascii(daily, lang, date_to), "trend-section")
 
 
 def _render_contribution_section(data: Mapping[str, Any], lang: str) -> str:
@@ -880,6 +986,7 @@ def _render_wrapped_section(data: Mapping[str, Any], lang: str) -> str:
     if beast not in {"phoenix", "dragon"}:
         return ""
 
+    weeks = wrapped.get("weeks", 53)
     beast_name = _t(lang, f"wrapped_beast_{beast}_title")
     beast_caption = _t(lang, f"wrapped_beast_{beast}_caption")
     books = _estimate_books(int(wrapped.get("total_tokens", 0)))
@@ -892,14 +999,14 @@ def _render_wrapped_section(data: Mapping[str, Any], lang: str) -> str:
         f'<h3>{_escape(beast_name)}</h3>'
         f'<p class="wrapped-beast-line">{_escape(beast_caption)}</p>'
         f'<div class="wrapped-total">{_escape(_fmt_int(int(wrapped.get("total_tokens", 0))))}</div>'
-        f'<p class="wrapped-total-label">{_escape(_t(lang, "wrapped_total_tokens"))}</p>'
+        f'<p class="wrapped-total-label">{_escape(_t(lang, "wrapped_total_tokens", weeks=weeks))}</p>'
         f'<p class="wrapped-analogy">{_escape(_t(lang, "wrapped_books_equivalent", books=_fmt_int(books)))}</p>'
         '</div>'
         '<div class="wrapped-art">'
         f'<img src="{_escape(_sprite_data_uri(str(beast)))}" alt="{_escape(beast_name)}">'
         '</div>'
         '<div class="wrapped-metrics">'
-        f'<div class="wrapped-metric"><span>{_escape(_t(lang, "wrapped_total_cost"))}</span><b>{_escape(_fmt_cost(float(wrapped.get("total_cost", 0.0))))}</b></div>'
+        f'<div class="wrapped-metric"><span>{_escape(_t(lang, "wrapped_total_cost", weeks=weeks))}</span><b>{_escape(_fmt_cost(float(wrapped.get("total_cost", 0.0))))}</b></div>'
         f'<div class="wrapped-metric"><span>{_escape(_t(lang, "wrapped_active_days"))}</span><b>{_escape(_fmt_int(int(wrapped.get("active_days", 0))))}</b></div>'
         f'<div class="wrapped-metric"><span>{_escape(_t(lang, "wrapped_longest_streak"))}</span><b>{_escape(_fmt_int(int(wrapped.get("longest_streak", 0))))} {_escape(_t(lang, "contribution_days_unit"))}</b></div>'
         f'<div class="wrapped-metric"><span>{_escape(_t(lang, "wrapped_top_model"))}</span><b>{_escape(top_model)}</b></div>'
@@ -913,6 +1020,16 @@ def _render_wrapped_section(data: Mapping[str, Any], lang: str) -> str:
 def _render_persona_section(data: Mapping[str, Any], lang: str) -> str:
     persona_body = _persona_body(data.get("persona"), lang)
     return _section(_t(lang, "persona_section"), persona_body, "persona-section")
+
+
+def _render_one_pass_section(data: Mapping[str, Any], lang: str) -> str:
+    persona = data.get("persona")
+    if not isinstance(persona, Mapping):
+        return ""
+    body = _one_pass_card(persona, lang)
+    if not body:
+        return ""
+    return _section(_t(lang, "persona_one_pass_title"), body, "one-pass-section")
 
 
 def _render_session_section(data: Mapping[str, Any], lang: str) -> str:
@@ -1029,7 +1146,9 @@ def generate_html(data: ReportData | Mapping[str, Any], language: str | None = N
         insight_surface = _render_insight_surface(report_data, lang)
         detail_sections = (
             f"  {_render_wrapped_section(report_data, lang)}\n"
-            f"{insight_surface}  {_render_tools_section(report_data, lang)}\n"
+            f"{insight_surface}{_render_one_pass_section(report_data, lang)}\n"
+            f"  {_render_tools_section(report_data, lang)}\n"
+            f"  {_render_composition_section(report_data, lang)}\n"
             f"  {_render_project_section(report_data, lang)}\n"
             f"  {_render_model_section(report_data, lang)}\n"
             f"  {_render_trend_section(report_data, lang, date_to)}\n"
@@ -1043,6 +1162,7 @@ def generate_html(data: ReportData | Mapping[str, Any], language: str | None = N
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>{html.escape(title)}</title>
+<script>{REPORT_THEME_INIT_JS}</script>
 <style>
 {_render_styles()}
 </style>

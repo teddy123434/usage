@@ -19,10 +19,10 @@ import tempfile
 import time
 from typing import Any, NotRequired, TypedDict, cast
 
-from loaders import codex_loader
+from loaders import cache_quarantine, codex_loader
 from analyzer import persona_loader
 from analyzer import subscription
-from adapters import agy, claude, codex
+from adapters import agy, claude, codex, grok
 from adapters.types import AgentInfo, UsageEntry
 from pricing import calculate_cost, is_model_priced
 
@@ -31,13 +31,13 @@ from . import diagnoser
 
 logger = logging.getLogger(__name__)
 
-AGENT_LOADERS = {"claude-code": claude, "codex": codex, "antigravity": agy}
+AGENT_LOADERS = {"claude-code": claude, "codex": codex, "antigravity": agy, "grok": grok}
 AGENT_NAMES = {"claude-code": "Claude Code", "codex": "Codex"}
 _YEAR_WEEKS = 53
 YEAR_CACHE_PATH = Path(os.path.expanduser("~/.usage/year_cache.json"))
 YEAR_LEDGER_PATH = YEAR_CACHE_PATH.with_name("year_ledger.json")
 YEAR_CACHE_TTL_SECONDS = 6 * 3600
-_YEAR_CACHE_SCHEMA = 1
+_YEAR_CACHE_SCHEMA = 3
 _YEAR_LEDGER_SCHEMA = 1
 _YEAR_LEDGER_TRIM_BUFFER_DAYS = 60
 
@@ -58,6 +58,10 @@ class _YearLedger(TypedDict):
 
 class SummaryReportData(TypedDict):
     total_tokens: int
+    input_tokens: int
+    output_tokens: int
+    cache_creation_tokens: int
+    cache_read_tokens: int
     cost_usd: float
     sessions: int
     messages: int
@@ -69,6 +73,10 @@ class AgentReportRow(TypedDict):
     id: str
     name: str
     tokens: int
+    input_tokens: int
+    output_tokens: int
+    cache_creation_tokens: int
+    cache_read_tokens: int
     cost: float
     sessions: int
     messages: int
@@ -148,6 +156,7 @@ class ContributionReportData(TypedDict):
 
 class WrappedReportData(TypedDict):
     year_label: str
+    weeks: int
     total_tokens: int
     total_cost: float
     active_days: int
@@ -487,6 +496,14 @@ def _token_map(value: object) -> dict[str, int]:
     return tokens
 
 
+def _normalize_project_tokens(tokens: dict[str, int]) -> dict[str, int]:
+    normalized: dict[str, int] = {}
+    for key, count in tokens.items():
+        project = key.removesuffix(".git") or key
+        normalized[project] = normalized.get(project, 0) + count
+    return normalized
+
+
 def _year_day_from_json(value: object) -> _YearDay | None:
     if not isinstance(value, dict):
         return None
@@ -506,7 +523,7 @@ def _year_day_from_json(value: object) -> _YearDay | None:
         "total_tokens": total_tokens,
         "cost": float(cost),
         "model_tokens": _token_map(value.get("model_tokens")),
-        "project_tokens": _token_map(value.get("project_tokens")),
+        "project_tokens": _normalize_project_tokens(_token_map(value.get("project_tokens"))),
         "agent_tokens": _token_map(value.get("agent_tokens")),
         "sessions": sessions,
     }
@@ -523,14 +540,22 @@ def _read_year_ledger() -> _YearLedger:
                 YEAR_LEDGER_PATH,
                 exc_info=True,
             )
+        cache_quarantine.quarantine(YEAR_LEDGER_PATH, "year ledger unreadable")
         return _empty_year_ledger()
 
     if not isinstance(ledger, dict):
+        cache_quarantine.quarantine(YEAR_LEDGER_PATH, "year ledger schema unreadable")
         return _empty_year_ledger()
     if ledger.get("schema_version") != _YEAR_LEDGER_SCHEMA:
-        return _empty_year_ledger()
+        logger.warning(
+            "year ledger schema mismatch in %s: expected %s, got %s; salvaging days",
+            YEAR_LEDGER_PATH,
+            _YEAR_LEDGER_SCHEMA,
+            ledger.get("schema_version"),
+        )
     raw_days = ledger.get("days")
     if not isinstance(raw_days, dict):
+        cache_quarantine.quarantine(YEAR_LEDGER_PATH, "year ledger schema unreadable")
         return _empty_year_ledger()
 
     days: dict[str, _YearDay] = {}
@@ -544,6 +569,9 @@ def _read_year_ledger() -> _YearLedger:
         day = _year_day_from_json(raw_day)
         if day is not None:
             days[day_key] = day
+    if raw_days and not days:
+        cache_quarantine.quarantine(YEAR_LEDGER_PATH, "year ledger days unparseable")
+        return _empty_year_ledger()
     return {
         "schema_version": _YEAR_LEDGER_SCHEMA,
         "days": days,
@@ -705,6 +733,7 @@ def _build_year_output_from_ledger(
     }
     wrapped: WrappedReportData = {
         "year_label": str(today.year),
+        "weeks": _YEAR_WEEKS,
         "total_tokens": total_tokens,
         "total_cost": _round_cost(total_cost),
         "active_days": active_days,
@@ -896,7 +925,18 @@ def build_report_data(agents: list[AgentInfo], period: str = "month") -> ReportD
     total_days = (date_to - date_from).days + 1
     comparison = _build_comparison(raw_entries, entry_dates, period, date_from, date_to)
 
-    by_agent_totals: dict[str, dict[str, Any]] = defaultdict(lambda: {"tokens": 0, "cost": 0.0, "sessions": set(), "messages": 0})
+    by_agent_totals: dict[str, dict[str, Any]] = defaultdict(
+        lambda: {
+            "tokens": 0,
+            "input_tokens": 0,
+            "output_tokens": 0,
+            "cache_creation_tokens": 0,
+            "cache_read_tokens": 0,
+            "cost": 0.0,
+            "sessions": set(),
+            "messages": 0,
+        }
+    )
     by_project_totals: dict[str, dict[str, Any]] = defaultdict(lambda: {"tokens": 0, "cost": 0.0, "sessions": set()})
     by_model_totals: dict[str, dict[str, Any]] = defaultdict(lambda: {"tokens": 0, "cost": 0.0})
     by_model_project: dict[str, dict[str, int]] = defaultdict(lambda: defaultdict(int))
@@ -907,6 +947,10 @@ def build_report_data(agents: list[AgentInfo], period: str = "month") -> ReportD
         total_cost += cost
         agent_totals = by_agent_totals[entry.agent_id or "unknown"]
         agent_totals["tokens"] += entry.total_tokens
+        agent_totals["input_tokens"] += entry.input_tokens
+        agent_totals["output_tokens"] += entry.output_tokens
+        agent_totals["cache_creation_tokens"] += entry.cache_creation_tokens
+        agent_totals["cache_read_tokens"] += entry.cache_read_tokens
         agent_totals["cost"] += cost
         agent_totals["sessions"].add(entry.session_id)
         agent_totals["messages"] += entry.message_count
@@ -933,6 +977,10 @@ def build_report_data(agents: list[AgentInfo], period: str = "month") -> ReportD
             "id": agent_id,
             "name": agent_names.get(agent_id, AGENT_NAMES.get(agent_id, agent_id)),
             "tokens": data["tokens"],
+            "input_tokens": data["input_tokens"],
+            "output_tokens": data["output_tokens"],
+            "cache_creation_tokens": data["cache_creation_tokens"],
+            "cache_read_tokens": data["cache_read_tokens"],
             "cost": _round_cost(data["cost"]),
             "sessions": len(data["sessions"]),
             "messages": data["messages"],
@@ -999,6 +1047,10 @@ def build_report_data(agents: list[AgentInfo], period: str = "month") -> ReportD
         "date_to": date_to.isoformat(),
         "summary": {
             "total_tokens": total_tokens,
+            "input_tokens": sum(entry.input_tokens for entry in entries),
+            "output_tokens": sum(entry.output_tokens for entry in entries),
+            "cache_creation_tokens": sum(entry.cache_creation_tokens for entry in entries),
+            "cache_read_tokens": sum(entry.cache_read_tokens for entry in entries),
             "cost_usd": _round_cost(total_cost),
             "sessions": len(session_ids),
             "messages": sum(entry.message_count for entry in entries),

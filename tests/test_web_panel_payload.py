@@ -18,7 +18,7 @@ from menubar import agy as menubar_agy
 from menubar import app as menubar
 from menubar import grok as menubar_grok
 from menubar.state import OpenRouterState, ProviderSourceState
-from panels.web_panel import UsageScriptBridge, _state_payload
+from panels.web_panel import UsageScriptBridge, _row_payload, _state_payload
 
 
 def test_state_payload_includes_agy_card_data() -> None:
@@ -63,6 +63,7 @@ def test_state_payload_includes_agy_card_data() -> None:
             "percent": 25.0,
             "percentText": "25% used",
             "resetText": "Resets in 1h 0m",
+            "resetTextCompact": "Resets in 1h 0m",
             "warning": False,
             "available": True,
             "title": "Session",
@@ -71,6 +72,7 @@ def test_state_payload_includes_agy_card_data() -> None:
             "percent": 50.0,
             "percentText": "50% used",
             "resetText": "Resets in 1d 0h",
+            "resetTextCompact": "Resets in 1d 0h",
             "warning": False,
             "available": True,
             "title": "Weekly",
@@ -115,10 +117,20 @@ def test_state_payload_includes_available_grok_card_data() -> None:
         "percent",
         "percentText",
         "resetText",
+        "resetTextCompact",
         "warning",
         "available",
         "title",
     }
+
+
+def test_row_payload_uses_full_reset_text_without_warning() -> None:
+    state = menubar._empty_state("en")
+
+    payload = _row_payload(state.claude_session)
+
+    assert state.claude_session.reset_text_compact == ""
+    assert payload["resetTextCompact"] == payload["resetText"]
 
 
 def test_state_payload_includes_stale_grok_card_data() -> None:

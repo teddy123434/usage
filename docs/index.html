@@ -15,29 +15,69 @@
 <meta name="twitter:image" content="https://aqua5230.github.io/usage/og-image.jpg" />
 <link rel="icon" type="image/png" sizes="32x32" href="favicon-32.png" />
 <link rel="apple-touch-icon" href="apple-touch-icon.png" />
+<link rel="canonical" href="https://aqua5230.github.io/usage/" />
 <link rel="alternate" hreflang="en" href="https://aqua5230.github.io/usage/?lang=en" />
 <link rel="alternate" hreflang="zh-TW" href="https://aqua5230.github.io/usage/?lang=zh-TW" />
 <link rel="alternate" hreflang="zh-CN" href="https://aqua5230.github.io/usage/?lang=zh-CN" />
 <link rel="alternate" hreflang="ja" href="https://aqua5230.github.io/usage/?lang=ja" />
 <link rel="alternate" hreflang="ko" href="https://aqua5230.github.io/usage/?lang=ko" />
 <link rel="alternate" hreflang="x-default" href="https://aqua5230.github.io/usage/" />
+<!--
+  結構化資料。Google 官方對生成式 AI 搜尋的說明是「結構化資料不是必要條件，也沒有
+  專為 AI 準備的 schema」，但同一頁也建議繼續使用，因為它讓頁面有資格取得一般搜尋
+  的 rich result：
+  https://developers.google.com/search/docs/fundamentals/ai-optimization-guide
+  SoftwareApplication 是 Google 目前仍支援的型別，必填 name、operatingSystem、
+  applicationCategory，以及 offers 或 aggregateRating 其中之一：
+  https://developers.google.com/search/docs/appearance/structured-data/software-app
+  這裡用 offers（免費），不放 aggregateRating——沒有真實評分資料，捏造會違反規範。
+-->
+<script type="application/ld+json">
+{
+  "@context": "https://schema.org",
+  "@type": "SoftwareApplication",
+  "name": "usage",
+  "applicationCategory": "DeveloperApplication",
+  "operatingSystem": "macOS 12 or later, Windows 10, Windows 11",
+  "softwareVersion": "0.30.10",
+  "description": "macOS menu bar and Windows tray tracker for Claude Code, Codex, Antigravity, and Grok CLI quota, tokens, and cost. Reading usage never calls an LLM inference API, so watching your quota never costs you tokens.",
+  "url": "https://aqua5230.github.io/usage/",
+  "downloadUrl": "https://github.com/aqua5230/usage/releases/latest",
+  "codeRepository": "https://github.com/aqua5230/usage",
+  "license": "https://www.gnu.org/licenses/agpl-3.0.html",
+  "isAccessibleForFree": true,
+  "offers": {
+    "@type": "Offer",
+    "price": "0",
+    "priceCurrency": "USD"
+  },
+  "author": {
+    "@type": "Person",
+    "name": "lollapalooza",
+    "url": "https://github.com/aqua5230"
+  }
+}
+</script>
 <style>
+/* Hallmark · pre-emit critique: P4 H4 E3 S4 R5 V4 · browser verification pending */
+/* Hallmark · macrostructure: Workbench · tone: restrained · anchor hue: orange */
 :root {
   --bg: #090a0f;
   --bg-soft: #11131a;
   --bg-card: rgba(20, 23, 32, 0.7);
   --fg: #f5f5f7;
   --fg-dim: #9898a0;
-  --fg-dimmer: #63636e;
-  --fg-footer: #71717a;
+  --fg-dimmer: #858590;
+  --fg-footer: #858590;
   --accent: #ff8c42;
   --accent-soft: rgba(255, 140, 66, 0.12);
+  --accent-hover: #ffa365;
   --border: rgba(255, 255, 255, 0.08);
   --green: #4ade80;
   --mono: ui-monospace, SFMono-Regular, "SF Mono", Menlo, monospace;
 }
 * { box-sizing: border-box; margin: 0; padding: 0; }
-html { scroll-behavior: smooth; scroll-padding-top: 64px; }
+html { scroll-behavior: smooth; scroll-padding-top: 64px; overflow-x: clip; }
 body {
   position: relative;
   font-family: -apple-system, BlinkMacSystemFont, "SF Pro Display", "SF Pro Text", "Segoe UI", Roboto, "Helvetica Neue", "Noto Sans CJK TC", "Noto Sans CJK SC", "Noto Sans JP", "Noto Sans KR", Arial, sans-serif;
@@ -45,7 +85,7 @@ body {
   color: var(--fg);
   line-height: 1.55;
   -webkit-font-smoothing: antialiased;
-  overflow-x: hidden;
+  overflow-x: clip;
 }
 a { color: inherit; text-decoration: none; }
 img { max-width: 100%; height: auto; display: block; }
@@ -71,17 +111,6 @@ button { font-family: inherit; cursor: pointer; }
 
 .wrap { max-width: 1080px; margin: 0 auto; padding: 0 24px; }
 @media (max-width: 640px) { .wrap { padding: 0 16px; } }
-
-/* Aurora glow behind the hero */
-.aurora {
-  position: fixed; top: -180px; left: 50%;
-  transform: translateX(-50%);
-  width: min(960px, 100vw); height: 480px; z-index: 0; pointer-events: none;
-  background: radial-gradient(60% 60% at 50% 35%, rgba(255, 140, 66, 0.16) 0%, transparent 70%),
-              radial-gradient(45% 45% at 65% 50%, rgba(255, 180, 100, 0.08) 0%, transparent 70%);
-  filter: blur(32px);
-  opacity: 0.8;
-}
 
 /* Top bar */
 .topbar {
@@ -164,10 +193,10 @@ button { font-family: inherit; cursor: pointer; }
   align-items: center;
   min-height: 36px;
   gap: 6px;
-  transition: border-color 0.15s, background 0.15s, transform 0.15s;
+  transition: border-color 0.15s, background 0.15s;
 }
-.lang-btn:hover { border-color: var(--fg-dimmer); background: var(--bg-soft); transform: translateY(-1px); }
-.lang-btn:active { transform: translateY(0); }
+.lang-btn:hover { border-color: var(--fg-dimmer); background: var(--bg-soft); }
+.lang-btn:active { background: var(--bg-soft); }
 .lang-btn[aria-expanded="true"] { border-color: var(--accent); }
 .lang-caret { font-size: 10px; color: var(--fg-dim); }
 .lang-menu {
@@ -204,8 +233,8 @@ button { font-family: inherit; cursor: pointer; }
   background: var(--accent-soft);
 }
 
-/* Hero — Product screenshot led, Apple showcase layout */
-.hero { padding: 32px 0 36px; text-align: center; }
+/* Hero — typography and the existing product image */
+.hero { padding: 72px 0 64px; text-align: left; }
 .eyebrow {
   display: inline-flex;
   align-items: center;
@@ -223,71 +252,38 @@ button { font-family: inherit; cursor: pointer; }
   font-weight: 650;
 }
 .hero h1 {
-  font-size: clamp(26px, 3.8vw, 40px);
-  line-height: 1.15;
+  font-size: clamp(34px, 4.5vw, 56px);
+  line-height: 1.12;
   letter-spacing: -0.035em;
   font-weight: 700;
-  margin-bottom: 10px;
-  background: linear-gradient(180deg, #ffffff 35%, #a6a6af 100%);
-  -webkit-background-clip: text; background-clip: text;
-  -webkit-text-fill-color: transparent;
+  min-width: 0;
+  max-width: 1000px;
+  margin-bottom: 24px;
+  overflow-wrap: anywhere;
 }
-.hero h1 .accent { color: var(--accent); -webkit-text-fill-color: var(--accent); text-shadow: 0 0 24px rgba(255, 140, 66, 0.28); }
+.hero h1 .accent { color: var(--accent); }
 .hero p.lead {
-  font-size: clamp(14px, 1.6vw, 15.5px);
+  font-size: clamp(16px, 1.6vw, 18px);
   color: var(--fg-dim);
-  max-width: 580px;
-  margin: 0 auto 16px;
-  line-height: 1.45;
+  max-width: 720px;
+  margin: 0 0 28px;
+  line-height: 1.65;
   text-wrap: balance;
 }
-.cta { display: flex; gap: 10px; justify-content: center; flex-wrap: wrap; margin-bottom: 24px; }
+.cta { display: flex; gap: 12px; justify-content: flex-start; flex-wrap: wrap; margin-bottom: 40px; }
 .btn {
   display: inline-flex; align-items: center; justify-content: center; gap: 8px;
   font-size: 15px; font-weight: 550;
-  min-height: 40px;
-  padding: 0 18px;
-  border-radius: 999px;
+  min-height: 44px;
+  padding: 0 16px;
+  border-radius: 8px;
   border: 1px solid transparent;
-  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.15);
-  transition: transform 150ms cubic-bezier(.22, 1, .36, 1), box-shadow 150ms ease, background 150ms ease, border-color 150ms ease;
+  white-space: nowrap;
+  transition: background 150ms ease, border-color 150ms ease;
 }
-.btn:hover {
-  transform: translateY(-2px);
-  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.2), 0 4px 14px -2px rgba(0, 0, 0, 0.4);
-}
-.btn:active {
-  transform: translateY(0) scale(.98);
-  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.15), inset 0 1px 2px rgba(0, 0, 0, 0.22);
-}
-.btn-primary {
-  position: relative;
-  overflow: hidden;
-  isolation: isolate;
-  background: linear-gradient(180deg, #ff9b57 0%, #ff8c42 100%);
-  color: #08090c;
-  font-weight: 600;
-  box-shadow: 0 2px 10px rgba(255, 140, 66, 0.35), inset 0 1px 0 rgba(255, 255, 255, 0.3);
-}
-.btn-primary::after {
-  content: '';
-  position: absolute;
-  inset: -40% auto -40% -35%;
-  width: 28%;
-  pointer-events: none;
-  background: linear-gradient(90deg, transparent, rgba(255, 255, 255, .32), transparent);
-  transform: translateX(-160%) skewX(-18deg);
-  transition: transform 520ms cubic-bezier(.22, 1, .36, 1);
-}
-.btn-primary:hover::after { transform: translateX(520%) skewX(-18deg); }
-.btn-primary:hover {
-  background: linear-gradient(180deg, #ffa86b 0%, #ff954e 100%);
-  box-shadow: 0 4px 18px rgba(255, 140, 66, 0.5), inset 0 1px 0 rgba(255, 255, 255, 0.4);
-}
-.btn-primary:active {
-  background: #ff8c42;
-  box-shadow: 0 1px 4px rgba(255, 140, 66, 0.3);
-}
+.btn-primary { background: var(--accent); color: var(--bg); font-weight: 600; }
+.btn-primary:hover { background: var(--accent-hover); }
+.btn-primary:active { background: var(--accent); }
 .btn-secondary {
   background: rgba(255, 255, 255, 0.04);
   color: var(--fg);
@@ -302,43 +298,27 @@ button { font-family: inherit; cursor: pointer; }
   background: rgba(255, 255, 255, 0.03);
 }
 .shot {
-  position: relative;
   margin: 0 auto;
-  border-radius: 14px;
+  border-radius: 10px;
   overflow: hidden;
-  border: 1px solid rgba(255, 255, 255, 0.12);
-  background: #0b0d13;
-  box-shadow: 0 0 0 1px rgba(255, 255, 255, 0.05),
-              0 24px 64px -14px rgba(0, 0, 0, 0.75),
-              0 0 50px -10px rgba(255, 140, 66, 0.18);
+  border: 1px solid var(--border);
+  background: var(--bg-soft);
   width: fit-content;
-  max-width: 960px;
-}
-.shot img {
   max-width: 100%;
-  height: auto;
-  max-height: min(55vh, 580px);
-  object-fit: contain;
-  display: block;
 }
+.shot img { max-width: 100%; height: auto; display: block; }
+.hero .shot { width: 100%; }
+.hero .shot img { width: 100%; }
 
-/* Floating mascot pet — placed at bottom of page, no longer blocking scroll */
+/* Static brand mascot */
 .mascot-pet {
   position: absolute;
   right: clamp(16px, 4vw, 48px);
   bottom: 24px;
   width: clamp(80px, 10vw, 130px);
-  z-index: 10;
   pointer-events: none;
-  filter: drop-shadow(0 0 20px rgba(255, 140, 66, 0.25)) drop-shadow(0 8px 16px rgba(0, 0, 0, 0.6));
-  animation: mascot-in 0.6s ease-out 0.4s both;
-}
-@keyframes mascot-in {
-  from { opacity: 0; transform: translateY(20px); }
-  to   { opacity: 1; transform: translateY(0); }
 }
 @media (max-width: 720px) { .mascot-pet { display: none; } }
-@media (prefers-reduced-motion: reduce) { .mascot-pet { animation: none; } }
 
 /* Privacy strip */
 .strip {
@@ -346,7 +326,6 @@ button { font-family: inherit; cursor: pointer; }
   border-top: 1px solid var(--border);
   border-bottom: 1px solid var(--border);
   padding: 16px 0;
-  backdrop-filter: blur(12px);
 }
 .strip .wrap {
   display: flex; align-items: center; justify-content: center; gap: clamp(16px, 3.5vw, 44px);
@@ -354,109 +333,95 @@ button { font-family: inherit; cursor: pointer; }
   font-size: 15px; color: var(--fg-dim);
 }
 .strip .item { display: flex; align-items: center; gap: 8px; }
-.strip .dot { width: 6px; height: 6px; background: var(--accent); border-radius: 50%; box-shadow: 0 0 8px var(--accent); flex-shrink: 0; }
+.strip .dot { width: 6px; height: 6px; background: var(--accent); border-radius: 50%; flex-shrink: 0; }
 .strip .item strong { color: var(--fg); font-weight: 550; }
 
-/* Sections */
-section { padding: 48px 0; }
+/* Sections use different compositions and spacing. */
+section { padding: 80px 0; }
 section h2 {
-  font-size: clamp(24px, 3.2vw, 34px);
+  font-size: clamp(26px, 3vw, 34px);
+  line-height: 1.2;
   letter-spacing: -0.025em;
-  font-weight: 700;
-  margin-bottom: 10px;
-  text-align: center;
+  font-weight: 650;
+  margin-bottom: 16px;
+  text-align: left;
+  overflow-wrap: anywhere;
+  min-width: 0;
 }
 section .subtitle {
-  text-align: center;
   color: var(--fg-dim);
-  max-width: 580px;
-  margin: 0 auto 32px;
-  font-size: 15px;
-  line-height: 1.5;
+  max-width: 640px;
+  margin: 0 0 36px;
+  font-size: 16px;
+  line-height: 1.7;
 }
-#resume .subtitle { max-width: 680px; text-wrap: balance; margin-bottom: 28px; }
+#features { padding: 96px 0; }
+#resume { padding: 72px 0 0; background: var(--bg-soft); border-top: 1px solid var(--border); }
+.resume-layout { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1.15fr); gap: 56px; align-items: center; }
+#resume .subtitle { margin-bottom: 0; }
+#resume .strip { margin-top: 56px; }
+#install { padding: 56px 0 64px; }
+#install h2, #install .subtitle { text-align: center; }
+#install .subtitle { margin-left: auto; margin-right: auto; }
+#screenshots { padding: 96px 0 80px; background: var(--bg-soft); }
 
-/* Feature grid */
-.grid {
-  display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
-  gap: 18px;
+/* One full-width lead, two supporting priorities, seven complete details. */
+.grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 0 32px; }
+.card { min-width: 0; padding: 28px 0; border-top: 1px solid var(--border); }
+.card h3 { font-size: 20px; line-height: 1.35; margin-bottom: 12px; letter-spacing: -0.01em; color: var(--fg); font-weight: 600; }
+.card p { font-size: 15px; color: var(--fg-dim); line-height: 1.7; overflow-wrap: anywhere; }
+.card-lead {
+  grid-column: 1 / -1;
+  display: grid; grid-template-columns: minmax(0, 1.1fr) minmax(0, 1fr); column-gap: 56px;
+  align-items: center; padding: 32px 36px; margin-bottom: 16px;
+  background: var(--bg-soft); border: 1px solid var(--border); border-radius: 10px;
 }
-.card {
-  background: var(--bg-card);
-  border: 1px solid var(--border);
-  border-radius: 14px;
-  padding: 24px;
-  position: relative;
-  overflow: hidden;
-  isolation: isolate;
-  --mx: 50%;
-  --my: 50%;
-  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.2);
-  will-change: transform;
-  transition: transform 220ms cubic-bezier(.22, 1, .36, 1), border-color 180ms ease, box-shadow 220ms ease;
-  backdrop-filter: blur(14px);
-  -webkit-backdrop-filter: blur(14px);
+.card-lead h3 { font-size: 28px; margin-bottom: 10px; }
+/* .qrow mirrors the .row-head / .track / .fill / .reset stack in assets/panels/classic.html
+   so the site shows the same readout the app does — same labels, 80% tick, and colours. */
+.qrow + .qrow { border-top: 1px solid var(--border); margin-top: 8px; padding-top: 8px; }
+.qhead { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; margin-bottom: 5px; }
+.qtitle { font-size: 15px; line-height: 18px; font-weight: 700; color: var(--fg); }
+.qpct { font-size: 13px; line-height: 18px; font-weight: 800; white-space: nowrap; font-variant-numeric: tabular-nums; }
+.qtrack {
+  height: 8px; border-radius: 99px; overflow: hidden;
+  background:
+    linear-gradient(90deg, transparent 0 calc(80% - 1px), rgba(255, 255, 255, 0.3) calc(80% - 1px) 80%, transparent 80%),
+    rgba(255, 255, 255, 0.07);
+  box-shadow: inset 0 1px 1px rgba(0, 0, 0, 0.18);
 }
-.card::before {
-  content: '';
-  position: absolute;
-  inset: 0;
-  z-index: -1;
-  pointer-events: none;
-  opacity: 0;
-  background: radial-gradient(200px circle at var(--mx) var(--my), rgba(255, 140, 66, .14), transparent 72%);
-  transition: opacity 180ms ease;
+.qfill {
+  height: 100%; min-width: 4px; border-radius: inherit;
+  background-image: linear-gradient(180deg, color-mix(in srgb, var(--fill-color) 100%, white 12%), var(--fill-color));
+  box-shadow: 0 0 12px color-mix(in srgb, var(--fill-color) 30%, transparent);
 }
-.card:hover {
-  border-color: rgba(255, 140, 66, 0.35);
-  transform: translateY(-3px);
-  box-shadow: 0 12px 30px -10px rgba(0, 0, 0, 0.5), 0 0 20px -6px rgba(255, 140, 66, 0.15);
+.qreset {
+  margin-top: 4px; color: rgba(255, 255, 255, 0.58);
+  font-size: 11px; line-height: 13px; font-weight: 600;
+  text-align: right; white-space: nowrap; font-variant-numeric: tabular-nums;
 }
-.card:hover::before { opacity: 1; }
-.grid:hover .card { opacity: .5; transition: opacity .25s ease; }
-.grid:hover .card:hover { opacity: 1; }
-.card .icon {
-  width: 38px; height: 38px; border-radius: 10px;
-  background: rgba(255, 140, 66, 0.1);
-  border: 1px solid rgba(255, 140, 66, 0.22);
-  display: flex; align-items: center; justify-content: center;
-  margin-bottom: 14px; color: var(--accent);
-  box-shadow: 0 0 14px -3px rgba(255, 140, 66, 0.16);
+.card-priority { padding: 24px 0 40px; border-top: 0; }
+.card-priority h3 { font-size: 24px; }
+.card:last-child {
+  grid-column: 1 / -1;
+  display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); column-gap: 32px; align-items: baseline;
 }
-.card .icon svg { width: 20px; height: 20px; stroke: currentColor; }
-.card h3 { font-size: 15.5px; margin-bottom: 8px; letter-spacing: -0.01em; color: #ffffff; font-weight: 600; }
-.card p { font-size: 15px; color: var(--fg-dim); line-height: 1.55; }
+.card:last-child h3 { margin-bottom: 0; }
 
-/* Motion enhancements retain visible content until JavaScript opts in. */
-.motion-ready .reveal {
-  opacity: 0;
-  transform: translateY(16px);
-  transition: opacity 520ms ease, transform 520ms cubic-bezier(.22, 1, .36, 1);
-  transition-delay: calc(var(--i, 0) * 50ms);
-}
-.motion-ready .reveal.is-visible { opacity: 1; transform: translateY(0); }
-
-@media (hover: none), (prefers-reduced-motion: reduce) {
-  .card::before { display: none; }
-}
+/* Keep content visible even when the existing observer adds reveal classes. */
 @media (prefers-reduced-motion: reduce) {
-  .card, .btn { transition-duration: 0.01ms; }
-  .card:hover, .btn:hover, .btn:active { transform: none; }
-  .motion-ready .reveal { opacity: 1; transform: none; transition: none; }
-  .btn-primary::after { display: none; }
-  .grid:hover .card { transition-duration: 0.01ms; }
+  html { scroll-behavior: auto; }
+  *, *::before, *::after { animation: none !important; transition: none !important; }
 }
 
 /* Install — Clear hierarchy with featured Recommended method */
 .install { background: var(--bg-soft); border-top: 1px solid var(--border); border-bottom: 1px solid var(--border); }
 .install-row {
   display: grid;
-  grid-template-columns: 1.35fr 1fr 1fr 1fr;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: 16px;
   align-items: stretch;
 }
-@media (max-width: 1180px) { .install-row { grid-template-columns: repeat(2, 1fr); } }
 @media (max-width: 720px) { .install-row { grid-template-columns: 1fr; } }
 .install-card {
   background: var(--bg-card);
@@ -485,8 +450,8 @@ section .subtitle {
 .install-card h3 { font-size: 17px; margin-bottom: 6px; font-weight: 600; }
 .install-card p { color: var(--fg-dim); font-size: 14.5px; margin-bottom: 14px; line-height: 1.45; flex-grow: 1; }
 .install-card pre {
-  white-space: pre-wrap;
-  overflow-wrap: break-word;
+  white-space: pre;
+  overflow-wrap: normal;
   font-size: 13px;
   padding: 10px 12px;
   background: #08090d;
@@ -523,7 +488,7 @@ pre {
   border: 1px solid var(--border);
   border-radius: 6px;
   cursor: pointer;
-  transition: all 140ms ease;
+  transition: color 140ms ease, border-color 140ms ease, background 140ms ease;
 }
 .copy-btn:hover { color: var(--fg); border-color: var(--accent); background: var(--accent-soft); }
 
@@ -550,21 +515,17 @@ pre {
   font-size: 13px;
   font-family: var(--mono);
 }
+/* 主題清單在左、預覽在右，兩欄併攏置中。預覽由 JS 縮到剛好塞進視窗，
+   換主題時整個面板一眼看完，不必上下捲。 */
 .panel-picker {
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  gap: 28px;
-  max-width: 960px;
-  margin: 0 auto;
-}
-.panel-chips {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 8px;
+  display: grid;
+  grid-template-columns: 240px auto;
   justify-content: center;
-  max-width: 760px;
+  align-items: start;
+  gap: 64px;
+  margin: 0;
 }
+.panel-chips { display: flex; flex-direction: column; gap: 6px; }
 .panel-chip {
   appearance: none;
   border: 1px solid var(--border);
@@ -589,7 +550,6 @@ pre {
   border-color: var(--accent);
   color: #08090c;
   font-weight: 600;
-  box-shadow: 0 0 16px -2px rgba(255, 140, 66, 0.35);
 }
 .panel-stage {
   width: 364px;
@@ -597,32 +557,44 @@ pre {
   overflow: hidden;
   border: 1px solid rgba(255, 255, 255, 0.12);
   background: var(--bg-card);
-  box-shadow: 0 24px 64px -12px rgba(0, 0, 0, 0.7), 0 0 40px -10px rgba(255, 140, 66, 0.12);
   flex-shrink: 0;
 }
-.panel-stage iframe { width: 100%; height: 1004px; border: 0; display: block; pointer-events: none; }
+.panel-stage iframe { width: 364px; height: 1004px; border: 0; display: block; pointer-events: none; transform-origin: top left; }
 @media (max-width: 760px) {
-  .panel-picker { flex-direction: column; align-items: center; gap: 20px; width: 100%; }
+  .panel-picker { grid-template-columns: minmax(0, 1fr); justify-content: start; gap: 24px; width: 100%; }
+  .panel-chips { flex-direction: row; flex-wrap: wrap; gap: 10px; }
   .panel-stage { width: min(364px, 100%); overflow-x: auto; }
 }
 
-/* Report block */
-.report {
-  text-align: center;
-  background: linear-gradient(180deg, rgba(255, 255, 255, 0.02) 0%, rgba(255, 140, 66, 0.06) 100%);
-  border-radius: 16px;
-  padding: 40px 24px;
-  margin-top: 36px;
-  border: 1px solid var(--border);
+/* Report: text above an uncropped, full-width document preview. */
+.report { text-align: left; padding: 48px 0 0; margin-top: 72px; border-top: 1px solid var(--border); }
+.report h3 { font-size: 28px; line-height: 1.25; margin-bottom: 16px; letter-spacing: -0.015em; font-weight: 650; }
+.report p { color: var(--fg-dim); margin-bottom: 32px; max-width: 720px; font-size: 16px; line-height: 1.7; }
+.report img { width: 100%; max-width: 100%; border-radius: 8px; border: 1px solid var(--border); }
+
+@media (max-width: 800px) {
+  .resume-layout { grid-template-columns: minmax(0, 1fr); gap: 32px; }
+  .topbar nav { gap: 16px; font-size: 14px; }
 }
-.report h3 { font-size: 22px; margin-bottom: 10px; letter-spacing: -0.015em; font-weight: 700; }
-.report p { color: var(--fg-dim); margin-bottom: 24px; max-width: 560px; margin-left: auto; margin-right: auto; font-size: 15.5px; }
-.report img {
-  margin: 0 auto;
-  border-radius: 10px;
-  border: 1px solid rgba(255, 255, 255, 0.1);
-  max-width: 780px;
-  box-shadow: 0 20px 60px -16px rgba(0, 0, 0, 0.7), 0 0 40px -15px rgba(255, 140, 66, 0.1);
+@media (max-width: 640px) {
+  .hero { padding: 40px 0; }
+  .eyebrow { font-size: 10px; letter-spacing: 0.025em; }
+  .hero h1 br { display: none; }
+  .hero .cta { gap: 8px; }
+  .hero .btn { padding: 0 12px; font-size: 14px; }
+  #features, #screenshots { padding: 56px 0; }
+  #resume { padding-top: 48px; }
+  #install { padding: 40px 0 48px; }
+  .grid, .card-lead, .card:last-child { grid-template-columns: minmax(0, 1fr); }
+  .card:last-child h3 { margin-bottom: 12px; }
+  .card-lead { padding: 24px; row-gap: 24px; }
+  .card-lead h3 { margin-bottom: 12px; font-size: 26px; }
+  .card-priority { padding: 28px 0; }
+  .card-priority + .card-priority { border-top: 1px solid var(--border); }
+  .strip .wrap { justify-content: flex-start; gap: 16px; }
+  .install-card { padding: 20px 16px; }
+  .panel-chip { white-space: nowrap; padding: 8px 12px; }
+  .report { margin-top: 48px; padding-top: 32px; }
 }
 
 /* Footer */
@@ -638,30 +610,20 @@ footer .links a { display: inline-flex; align-items: center; min-height: 24px; t
 footer .links a:hover { color: var(--fg); }
 footer .kofi {
   display: inline-block;
-  background: #ff5e5b;
-  color: white;
+  /* #ff8c42 on #090a0f = 8.55:1 (WCAG AA); hover #ffa365 on #090a0f = 10.06:1 */
+  background: var(--accent);
+  color: var(--bg);
   padding: 7px 14px;
   border-radius: 8px;
   font-size: 13.5px;
   font-weight: 550;
   transition: background 150ms ease;
 }
-footer .kofi:hover { background: #ff7572; }
-body::before {
-  content: "";
-  position: fixed;
-  inset: 0;
-  z-index: 9999;
-  pointer-events: none;
-  opacity: 0.03;
-  mix-blend-mode: overlay;
-  background-image: url("data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHdpZHRoPSIxODAiIGhlaWdodD0iMTgwIiB2aWV3Qm94PSIwIDAgMTgwIDE4MCI+PGZpbHRlciBpZD0ibiI+PGZlVHVyYnVsZW5jZSB0eXBlPSJmcmFjdGFsTm9pc2UiIGJhc2VGcmVxdWVuY3k9Ii45IiBudW1PY3RhdmVzPSI0IiBzdGl0Y2hUaWxlcz0ic3RpdGNoIi8+PC9maWx0ZXI+PHJlY3Qgd2lkdGg9IjEwMCUiIGhlaWdodD0iMTAwJSIgZmlsdGVyPSJ1cmwoI24pIiBvcGFjaXR5PSIuNSIvPjwvc3ZnPg==");
-}
+footer .kofi:hover { background: var(--accent-hover); }
 </style>
 </head>
 <body>
 <a class="skip-link" href="#main-content" data-i18n="skip_main">Skip to main content</a>
-<div class="aurora" aria-hidden="true"></div>
 
 <header class="topbar">
   <div class="wrap">
@@ -680,6 +642,7 @@ body::before {
         <a href="#resume" data-i18n="nav_resume">Resume</a>
         <a href="#install" data-i18n="nav_install">Install</a>
         <a href="#screenshots" data-i18n="nav_screenshots">Panels</a>
+        <a href="https://github.com/aqua5230/usage" target="_blank" rel="noopener">GitHub</a>
       </nav>
     </details>
     <div class="lang">
@@ -709,7 +672,7 @@ body::before {
       <a class="btn btn-secondary" href="https://github.com/aqua5230/usage" target="_blank" rel="noopener" data-i18n="cta_star">★ Star on GitHub</a>
     </div>
     <div class="shot">
-      <img width="1448" height="1086" fetchpriority="high" decoding="async" src="showcase.en.webp" data-i18n-attr="alt:hero_img_alt" alt="usage running in the macOS menu bar, with the quota popover open on a MacBook" />
+      <img width="1448" height="1086" fetchpriority="high" decoding="async" src="showcase-v3.en.webp" data-i18n-attr="alt:hero_img_alt" alt="usage running in the macOS menu bar, with the quota popover open on a MacBook" />
     </div>
   </div>
 </section>
@@ -727,72 +690,70 @@ body::before {
     <h2 data-i18n="features_h2">Built for developers who burn tokens.</h2>
     <p class="subtitle" data-i18n="features_sub">Stop guessing if you're about to hit the rate limit mid-refactor.</p>
     <div class="grid">
-      <div class="card">
-        <span class="icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M3.5 13a8.5 8.5 0 0 1 17 0"/><path d="M12 13l3.8-2.6"/><circle cx="12" cy="13" r="1.3" fill="currentColor" stroke="none"/></svg></span>
-        <h3 data-i18n="card1_h">5-hour &amp; 7-day quota at a glance</h3>
-        <p data-i18n="card1_p">Both Claude Code session (5h) and weekly (7d) percentages live in the menu bar. Click for a full popover with per-project usage and cost.</p>
+      <div class="card card-lead">
+        <div class="lead-txt">
+          <h3 data-i18n="card1_h">5-hour &amp; 7-day quota at a glance</h3>
+          <p data-i18n="card1_p">Both Claude Code session (5h) and weekly (7d) percentages live in the menu bar. Click for a full popover with per-project usage and cost.</p>
+        </div>
+        <div class="lead-rows" aria-hidden="true">
+          <div class="qrow">
+            <div class="qhead"><span class="qtitle" data-i18n="q_session">Session</span><span class="qpct" style="color:#ffc439" data-i18n="q_used_s">62% used</span></div>
+            <div class="qtrack"><div class="qfill" style="width:62%;--fill-color:#ffc439"></div></div>
+            <div class="qreset" data-i18n="q_reset_s">Resets in 2h 14m</div>
+          </div>
+          <div class="qrow">
+            <div class="qhead"><span class="qtitle" data-i18n="q_weekly">Weekly</span><span class="qpct" style="color:#f49164" data-i18n="q_used_w">38% used</span></div>
+            <div class="qtrack"><div class="qfill" style="width:38%;--fill-color:#f49164"></div></div>
+            <div class="qreset" data-i18n="q_reset_w">Resets in 3d 6h</div>
+          </div>
+        </div>
       </div>
-      <div class="card">
-        <span class="icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3l9 5-9 5-9-5 9-5z"/><path d="M3 13l9 5 9-5"/></svg></span>
+      <div class="card card-priority">
         <h3 data-i18n="card2_h">Claude Code, Codex &amp; Antigravity, one app</h3>
         <p data-i18n="card2_p">Track Anthropic, OpenAI, and Google quota side by side. Codex is auto-detected from <code>~/.codex/sessions/</code> with no setup; Antigravity uses the sign-in its own CLI already stores.</p>
       </div>
-      <div class="card">
-        <span class="icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="18" height="14" rx="1.5"/><path d="M7 9l3 3-3 3"/><path d="M12 15h5"/></svg></span>
-        <h3 data-i18n="card14_h">Grok CLI, too</h3>
-        <p data-i18n="card14_p">A fourth card reads Grok CLI's weekly credit percentage straight from its own local debug log — no network call. Its per-request token usage still counts toward today's cost and project totals, just like Claude Code and Codex.</p>
-      </div>
-      <div class="card">
-        <span class="icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3l7 3v5c0 4.5-3 7.5-7 9-4-1.5-7-4.5-7-9V6l7-3z"/><path d="M9 12l2 2 4-4"/></svg></span>
+      <div class="card card-priority">
         <h3 data-i18n="card3_h">Local-first by design</h3>
         <p data-i18n="card3_p">Claude Code and Codex numbers come from files already on your disk — a statusLine hook status file plus Codex session JSONL logs — with no network access at all. Antigravity quota is fetched from Google using the credential its own CLI stores. Every outbound request is listed in SECURITY.md.</p>
       </div>
       <div class="card">
-        <span class="icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M3 3v18h18"/><path d="M8 17v-5"/><path d="M13 17V8"/><path d="M18 17v-3"/></svg></span>
+        <h3 data-i18n="card14_h">Grok CLI, too</h3>
+        <p data-i18n="card14_p">A fourth card reads Grok CLI's weekly credit percentage straight from its own local debug log — no network call. Its per-request token usage still counts toward today's cost and project totals, just like Claude Code and Codex.</p>
+      </div>
+      <div class="card">
         <h3 data-i18n="card4_h">One-click HTML reports</h3>
         <p data-i18n="card4_p">Today, week, month, or all-time — get a shareable HTML report with token / cost trends, top projects, and model breakdown. Project names hide by default for client-safe sharing.</p>
       </div>
       <div class="card">
-        <span class="icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="7" height="7" rx="1.5"/><rect x="14" y="3" width="7" height="7" rx="1.5"/><rect x="3" y="14" width="7" height="7" rx="1.5"/><rect x="14" y="14" width="7" height="7" rx="1.5"/></svg></span>
         <h3 data-i18n="card5_h">14 visual panel themes</h3>
         <p data-i18n="card5_p">Matrix digital rain, Windows 95, retro newspaper, midnight aquarium, World Cup FIFA HUD, Lepidoptera blueprint — pick a mood for your menu bar pop-out.</p>
       </div>
       <div class="card">
-        <span class="icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M16 19v-1.5a3.5 3.5 0 0 0-3.5-3.5h-5A3.5 3.5 0 0 0 4 17.5V19"/><circle cx="9.5" cy="8" r="3"/><path d="M20 19v-1.5a3.5 3.5 0 0 0-2.5-3.37"/><path d="M14.5 4.13a3 3 0 0 1 0 5.74"/></svg></span>
-        <h3 data-i18n="card7_h">AI Talent Market</h3>
-        <p data-i18n="card7_p">Install a curated team of Claude Code subagent personas — a one-person law practice, a solo software studio, and more — straight into <code>~/.claude/agents/</code>, then call one by name in your next conversation.</p>
-      </div>
-      <div class="card">
-        <span class="icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M4 14h6v6"/><path d="M20 10h-6V4"/><path d="M14 10l7-7"/><path d="M3 21l7-7"/></svg></span>
         <h3 data-i18n="card8_h">Terse Mode</h3>
-        <p data-i18n="card8_p">A menu-bar toggle that asks Claude Code — and Codex CLI too, if it's installed — to answer more tersely for the whole session: same substance, fewer words, while code, commands, and error messages stay byte-exact.</p>
+        <p data-i18n="card8_p">A menu-bar toggle that asks Claude Code — and Codex CLI too, if it's installed — to answer more tersely and in plainer language for the whole session: same substance, fewer words, while code, commands, and error messages stay byte-exact. A light reminder keeps long conversations from drifting back to verbose.</p>
       </div>
       <div class="card">
-        <span class="icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M6 8a6 6 0 0 1 12 0c0 7 3 9 3 9H3s3-2 3-9"/><path d="M10.3 21a1.94 1.94 0 0 0 3.4 0"/></svg></span>
         <h3 data-i18n="card10_h">Notifications before you hit the wall</h3>
         <p data-i18n="card10_p">When your context window hits 70% — or earlier when it is filling fast — the status line nudges you to <code>/clear</code> or <code>/compact</code> to prevent token waste. You can also opt-in to system notifications for quota limits and recoveries. The status line also shows your prompt cache hit rate with a countdown to expiry, so you can tell whether finishing now still reuses the cached context.</p>
-      </div>
-      <div class="card">
-        <span class="icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M4 5.5h9a2 2 0 0 1 2 2V12a2 2 0 0 1-2 2H10l-3 2.5V14H6a2 2 0 0 1-2-2V7.5a2 2 0 0 1 2-2z"/><path d="M17 9h1a2 2 0 0 1 2 2v3.5a2 2 0 0 1-2 2h-.5v2l-2.2-2H13"/></svg></span>
-        <h3 data-i18n="card13_h">AI Council</h3>
-        <p data-i18n="card13_p">Run a multi-round discussion between Claude Code, Codex, and Antigravity on one topic. Pick who joins, which model each one uses, and how many rounds — with a token estimate shown before you start.</p>
       </div>
     </div>
   </div>
 </section>
 
 <section id="resume">
-  <div class="wrap">
-    <div style="text-align: center;">
+  <div class="wrap resume-layout">
+    <div class="resume-copy">
+    <div>
       <span class="eyebrow" data-i18n="resume_label">PROGRESS CONCIERGE</span>
     </div>
     <h2 data-i18n="resume_h2">Now your CLI picks up where you left off</h2>
     <p class="subtitle" data-i18n="resume_lead">The web and desktop apps keep your history automatically — close them, reopen, it's all there. The CLI keeps it too, but you need to know the command to pull it back up. Resume makes that automatic: open a new session and it picks up where you left off, no command to remember, no re-explaining. It now also runs a daily health check on your logs — when it spots token waste, the handoff adds a one-line heads-up; say "show me" for the findings and fixes. Reads local files only — never connects to any API.</p>
+    </div>
     <div class="shot">
-      <img src="resume.webp" loading="lazy" data-i18n-attr="alt:resume_img_alt" alt="Resume restoring your last session in the CLI" />
+      <img width="1983" height="793" src="resume-ink.webp" loading="lazy" data-i18n-attr="alt:resume_img_alt" alt="usage — an ink-brush cat inside a red enso circle, with the line &quot;Pick up where you left off.&quot;" />
     </div>
   </div>
-  <div class="strip" style="margin-top: 40px;">
+  <div class="strip">
     <div class="wrap">
       <div class="item"><span class="dot"></span><strong data-i18n="resume_point1">Auto-resumes your last progress</strong></div>
       <div class="item"><span class="dot"></span><strong data-i18n="resume_point4">Daily health check flags token waste</strong></div>
@@ -848,10 +809,10 @@ body::before {
       <div class="panel-chips" id="panel-chips" role="group" data-i18n-attr="aria-label:screen_h2" aria-label="Pick a panel that fits your mood."></div>
       <div class="panel-stage"><iframe id="panel-stage" title="usage panel preview" loading="lazy" scrolling="no"></iframe></div>
     </div>
-    <div class="report" style="margin-top: 56px;">
+    <div class="report">
       <h3 data-i18n="report_h">Your AI usage, in one shareable page.</h3>
       <p data-i18n="report_p">Generate an HTML report with token spend, cost, top projects, and model distribution — plus a year-in-review page with a GitHub-style contribution heatmap and a "Wrapped" card. Send to your manager. Use as a client invoice attachment. Project names hide by default.</p>
-      <img loading="lazy" decoding="async" data-shot src="report.en.png" data-img-en="report.en.png" data-img-cjk="report.png" alt="HTML usage report" />
+      <img width="976" height="1036" loading="lazy" decoding="async" data-shot data-size-en="976x1036" data-size-cjk="995x1036" src="report.en.png" data-img-en="report.en.png" data-img-cjk="report.png" alt="HTML usage report" />
     </div>
   </div>
 </section>
@@ -899,6 +860,12 @@ const T = {
     features_sub: "Stop guessing if you're about to hit the rate limit mid-refactor.",
     card1_h: '5-hour &amp; 7-day quota at a glance',
     card1_p: 'Both Claude Code session (5h) and weekly (7d) percentages live in the menu bar. Click for a full popover with per-project usage and cost.',
+    q_session: 'Session',
+    q_weekly: 'Weekly',
+    q_used_s: '62% used',
+    q_used_w: '38% used',
+    q_reset_s: 'Resets in 2h 14m',
+    q_reset_w: 'Resets in 3d 6h',
     card2_h: 'Claude Code, Codex &amp; Antigravity, one app',
     card2_p: 'Track Anthropic, OpenAI, and Google quota side by side. Codex is auto-detected from <code>~/.codex/sessions/</code> with no setup; Antigravity uses the sign-in its own CLI already stores.',
     card14_h: 'Grok CLI, too',
@@ -909,21 +876,17 @@ const T = {
     card4_p: 'Today, week, month, or all-time — get a shareable HTML report with token / cost trends, top projects, and model breakdown. Project names hide by default for client-safe sharing.',
     card5_h: '14 visual panel themes',
     card5_p: 'Matrix digital rain, Windows 95, retro newspaper, midnight aquarium, World Cup FIFA HUD, Lepidoptera blueprint — pick a mood for your menu bar pop-out.',
-    card7_h: 'AI Talent Market',
-    card7_p: 'Install a curated team of Claude Code subagent personas — a one-person law practice, a solo software studio, and more — straight into <code>~/.claude/agents/</code>, then call one by name in your next conversation.',
     card8_h: 'Terse Mode',
-    card8_p: "A menu-bar toggle that asks Claude Code — and Codex CLI too, if it's installed — to answer more tersely for the whole session: same substance, fewer words, while code, commands, and error messages stay byte-exact.",
+    card8_p: "A menu-bar toggle that asks Claude Code — and Codex CLI too, if it's installed — to answer more tersely and in plainer language for the whole session: same substance, fewer words, while code, commands, and error messages stay byte-exact. A light reminder keeps long conversations from drifting back to verbose.",
     card10_h: 'Notifications before you hit the wall',
     card10_p: 'When your context window hits 70% — or earlier when it is filling fast — the status line nudges you to <code>/clear</code> or <code>/compact</code> to prevent token waste. You can also opt-in to system notifications for quota limits and recoveries. The status line also shows your prompt cache hit rate with a countdown to expiry, so you can tell whether finishing now still reuses the cached context.',
-    card13_h: 'AI Council',
-    card13_p: 'Run a multi-round discussion between Claude Code, Codex, and Antigravity on one topic. Pick who joins, which model each one uses, and how many rounds — with a token estimate shown before you start.',
     resume_label: 'PROGRESS CONCIERGE',
     resume_h2: 'Now your CLI picks up where you left off',
     resume_lead: "The web and desktop apps keep your history automatically — close them, reopen, it's all there. The CLI keeps it too, but you need to know the command to pull it back up. Resume makes that automatic: open a new session and it picks up where you left off, no command to remember, no re-explaining. It now also runs a daily health check on your logs — when it spots token waste, the handoff adds a one-line heads-up; say \"show me\" for the findings and fixes. Reads local files only — never connects to any API.",
     resume_point1: 'Auto-resumes your last progress',
     resume_point4: 'Daily health check flags token waste',
     resume_point2: 'Reads local files only',
-    resume_img_alt: 'Resume restoring your last session in the CLI',
+    resume_img_alt: 'usage — an ink-brush cat inside a red enso circle, with the line "Pick up where you left off."',
     mascot_alt: 'The usage butler cat, your progress concierge',
     install_h2: 'Install in 10 seconds.',
     install_sub: 'Four ways to get it running. All free, all AGPL-3.0.',
@@ -942,6 +905,7 @@ const T = {
     install_btn_releases: '→ Open Releases page',
     copy_btn: 'Copy',
     copy_done: 'Copied',
+    copy_fail: 'Copy failed',
     screen_h2: 'Pick a panel that fits your mood.',
     screen_sub: 'Fourteen built-in themes. Change anytime from the popover toolbar.',
     report_h: 'Your AI usage, in one shareable page.',
@@ -978,6 +942,12 @@ const T = {
     features_sub: '別再憑感覺猜還剩多少配額了。',
     card1_h: '5 小時與 7 天配額一覽',
     card1_p: 'Claude Code 的 5 小時和 7 天百分比同時顯示在 menu bar。點開可看完整 popover、各專案用量與成本。',
+    q_session: 'Session',
+    q_weekly: '本週',
+    q_used_s: '62% 已用',
+    q_used_w: '38% 已用',
+    q_reset_s: '重置 2小時 14分鐘',
+    q_reset_w: '重置 3天 6小時',
     card2_h: 'Claude Code、Codex、Antigravity 一個 app 搞定',
     card2_p: 'Anthropic、OpenAI 與 Google 的配額並排顯示。Codex 從 <code>~/.codex/sessions/</code> 自動偵測，不需設定；Antigravity 則用它自己的 CLI 已經存好的登入身分。',
     card14_h: 'Grok CLI 也算進來',
@@ -988,21 +958,17 @@ const T = {
     card4_p: '今日、本週、本月或全部——產出可分享的 HTML 報告，內含 token / 成本走勢、各專案排行與模型分布。預設隱藏專案名稱，安全分享給客戶。',
     card5_h: '14 款視覺面板主題',
     card5_p: '駭客任務數字雨、Windows 95、復古報紙、午夜水族箱、世界盃 FIFA 轉播、蝴蝶藍圖——挑個喜歡的氛圍。',
-    card7_h: 'AI 人才市場',
-    card7_p: '把整套 Claude Code 角色人設檔——律師事務所、軟體工作室等——一次安裝進 <code>~/.claude/agents/</code>，下次對話點名就能用。',
     card8_h: '精簡模式',
-    card8_p: '選單列開關，讓 Claude Code——連同裝好的 Codex CLI——整個對話回答更簡短：內容不變、字變少，但程式碼、指令、錯誤訊息一個字都不會被縮減。',
+    card8_p: '選單列開關，讓 Claude Code——連同裝好的 Codex CLI——整個對話回答更簡短、更白話：內容不變、字變少，但程式碼、指令、錯誤訊息一個字都不會被縮減。輕聲提醒維持精簡，長對話也不會慢慢講回囉嗦。',
     card10_h: '撞牆前先提醒你',
     card10_p: '上下文窗用到 70%（填得快時會提早）時，狀態列會提醒你 <code>/clear</code> 或 <code>/compact</code>，避免浪費 token；你也能另外開啟配額門檻與恢復通知的系統提醒。狀態列也會顯示 prompt cache 命中率與過期倒數，讓你判斷現在收尾還能不能沿用已快取的內容。',
-    card13_h: 'AI 圓桌討論',
-    card13_p: '讓 Claude Code、Codex、Antigravity 針對同一個題目進行多輪討論。自選誰加入、各自用哪個模型、討論幾輪——開始前就看得到大約會花多少 token。',
     resume_label: '進度管家',
     resume_h2: '讓你的 CLI 也接得回上次',
     resume_lead: '網頁版、桌面 App 關掉再打開，對話自動就在那，什麼都不用做；CLI 的紀錄其實也留著，但不會自動接上，得自己打指令去找。進度管家把這一步變成自動——開新對話就直接接回你上次做到哪，不用重講、也不用記指令。現在還會每天幫本機紀錄做一次健檢，發現 token 浪費時開場白會多一行提醒；說「看」，AI 就會解釋發現了什麼、該怎麼改。只讀本機紀錄，不連到服務端。',
     resume_point1: '自動接回上次進度',
     resume_point4: '每日健檢，主動提醒 token 浪費',
     resume_point2: '只讀本機紀錄',
-    resume_img_alt: '進度管家把上次進度接回 CLI 的示意',
+    resume_img_alt: 'usage 品牌橫幅：水墨貓與紅色圓相，標語「Pick up where you left off.」',
     mascot_alt: 'usage 管家貓，你的進度管家',
     install_h2: '10 秒安裝完成。',
     install_sub: '四種方式都免費、都 AGPL-3.0。',
@@ -1021,6 +987,7 @@ const T = {
     install_btn_releases: '→ 開啟 Releases 頁面',
     copy_btn: '複製',
     copy_done: '已複製',
+    copy_fail: '複製失敗',
     screen_h2: '挑一個你喜歡的面板。',
     screen_sub: '14 款內建主題。隨時從 popover 工具列切換。',
     report_h: '你的 AI 用量，一頁可分享。',
@@ -1057,6 +1024,12 @@ const T = {
     features_sub: '别再凭感觉猜还剩多少额度了。',
     card1_h: '5 小时与 7 天额度一览',
     card1_p: 'Claude Code 的 5 小时和 7 天百分比同时显示在 menu bar。点开可看完整 popover、各项目用量与花费。',
+    q_session: 'Session',
+    q_weekly: '本周',
+    q_used_s: '62% 已用',
+    q_used_w: '38% 已用',
+    q_reset_s: '重置 2小时 14分钟',
+    q_reset_w: '重置 3天 6小时',
     card2_h: 'Claude Code、Codex、Antigravity 一个 app 搞定',
     card2_p: 'Anthropic、OpenAI 与 Google 的额度并排显示。Codex 从 <code>~/.codex/sessions/</code> 自动检测，无需配置；Antigravity 则使用它自己的 CLI 已保存的登录身份。',
     card14_h: 'Grok CLI 也算进来',
@@ -1067,21 +1040,17 @@ const T = {
     card4_p: '今日、本周、本月或全部——生成可分享的 HTML 报告，内含 token / 花费趋势、项目排行与模型分布。默认隐藏项目名称，安全分享给客户。',
     card5_h: '14 款视觉面板主题',
     card5_p: '黑客帝国数字雨、Windows 95、复古报纸、午夜水族馆、世界杯 FIFA 转播、蝴蝶蓝图——挑个喜欢的氛围。',
-    card7_h: 'AI 人才市场',
-    card7_p: '把整套 Claude Code 角色人设档——律师事务所、软件工作室等——一次安装进 <code>~/.claude/agents/</code>，下次对话点名就能用。',
     card8_h: '精简模式',
-    card8_p: '菜单栏开关，让 Claude Code——连同装好的 Codex CLI——整个对话回答更简短：内容不变、字变少，但代码、命令、错误消息一个字都不会被缩减。',
+    card8_p: '菜单栏开关，让 Claude Code——连同装好的 Codex CLI——整个对话回答更简短、更白话：内容不变、字变少，但代码、命令、错误消息一个字都不会被缩减。轻声提醒维持精简，长对话也不会慢慢讲回啰嗦。',
     card10_h: '撞墙前先提醒你',
     card10_p: '上下文窗口用到 70%（填得快时会提前）时，状态栏会提醒你 <code>/clear</code> 或 <code>/compact</code>，避免浪费 token；你也可以另外开启额度门槛与恢复通知的系统提醒。状态栏也会显示 prompt cache 命中率与过期倒计时，让你判断现在收尾还能不能沿用已缓存的内容。',
-    card13_h: 'AI 圆桌讨论',
-    card13_p: '让 Claude Code、Codex、Antigravity 针对同一个题目进行多轮讨论。自选谁加入、各自用哪个模型、讨论几轮——开始前就能看到大约会花多少 token。',
     resume_label: '进度管家',
     resume_h2: '让你的 CLI 也接得回上次',
     resume_lead: '网页版、桌面 App 关掉再打开，对话自动就在那，什么都不用做；CLI 的记录其实也留着，但不会自动接上，得自己打指令去找。进度管家把这一步变成自动——开新对话就直接接回你上次做到哪，不用重讲、也不用记指令。现在还会每天帮本机记录做一次健检，发现 token 浪费时开场白会多一行提醒；说「看」，AI 就会解释发现了什么、该怎么改。只读本机记录，不连到服务端。',
     resume_point1: '自动接回上次进度',
     resume_point4: '每日健检，主动提醒 token 浪费',
     resume_point2: '只读本机记录',
-    resume_img_alt: '进度管家把上次进度接回 CLI 的示意',
+    resume_img_alt: 'usage 品牌横幅：水墨猫与红色圆相，标语「Pick up where you left off.」',
     mascot_alt: 'usage 管家猫，你的进度管家',
     install_h2: '10 秒内安装完成。',
     install_sub: '四种方式都免费、都 AGPL-3.0。',
@@ -1100,6 +1069,7 @@ const T = {
     install_btn_releases: '→ 打开 Releases 页面',
     copy_btn: '复制',
     copy_done: '已复制',
+    copy_fail: '复制失败',
     screen_h2: '挑一个你喜欢的面板。',
     screen_sub: '14 款内建主题。随时从 popover 工具栏切换。',
     report_h: '你的 AI 用量，一页可分享。',
@@ -1136,6 +1106,12 @@ const T = {
     features_sub: 'リファクタリング中にレート制限に達するかどうか、もう推測しなくていい。',
     card1_h: '5 時間 & 7 日のクォータをひと目で',
     card1_p: 'Claude Code のセッション (5h) と週間 (7d) のパーセンテージをメニューバーに常時表示。クリックでプロジェクト別使用量とコストの詳細ポップオーバーを表示。',
+    q_session: 'セッション',
+    q_weekly: '週間',
+    q_used_s: '62% 使用済み',
+    q_used_w: '38% 使用済み',
+    q_reset_s: '2時間 14分後にリセット',
+    q_reset_w: '3日 6時間後にリセット',
     card2_h: 'Claude Code、Codex、Antigravity を 1 つのアプリで',
     card2_p: 'Anthropic、OpenAI、Google のクォータを並べて追跡。Codex は <code>~/.codex/sessions/</code> から設定不要で自動検出。Antigravity は CLI が保存済みのサインイン情報を利用します。',
     card14_h: 'Grok CLI にも対応',
@@ -1146,21 +1122,17 @@ const T = {
     card4_p: '今日・週・月・全期間で、トークン / コスト推移、トッププロジェクト、モデル分布を含む共有可能な HTML レポートを生成。プロジェクト名はデフォルトで非表示。',
     card5_h: '14 種のビジュアルパネル',
     card5_p: 'マトリックスのデジタルレイン、Windows 95、レトロ新聞、深夜水族館、ワールドカップ FIFA HUD、蝶の設計図 — お好みの雰囲気で。',
-    card7_h: 'AI人材マーケット',
-    card7_p: '法律事務所やソフトウェア工房など、キャラクター設定一式を <code>~/.claude/agents/</code> にまとめてインストール。次の会話で名前を呼ぶだけで使えます。',
     card8_h: '簡潔モード',
-    card8_p: 'メニューバーのスイッチ一つで、Claude Code（導入済みなら Codex CLI にも）に会話全体をより簡潔に答えるよう依頼——内容はそのまま、文字数だけ減り、コード・コマンド・エラーメッセージは一切省略されません。',
+    card8_p: 'メニューバーのスイッチ一つで、Claude Code（導入済みなら Codex CLI にも）に会話全体をより簡潔で平易に答えるよう依頼——内容はそのまま、文字数だけ減り、コード・コマンド・エラーメッセージは一切省略されません。さりげないリマインダーが、長い会話でも冗長さへの逆戻りを防ぎます。',
     card10_h: '壁にぶつかる前に通知',
     card10_p: 'コンテキストウィンドウが 70%（埋まるのが速い場合はもっと早く）に達すると、ステータスラインが <code>/clear</code> または <code>/compact</code> を促してトークン浪費を防ぎます。さらに、クォータ制限や回復のシステム通知も任意で有効化できます。ステータスラインには prompt cache ヒット率と有効期限へのカウントダウンも表示され、今すぐ終わらせてもキャッシュされた内容を使い回せるか判断できます。',
-    card13_h: 'AI円卓会議',
-    card13_p: 'Claude Code、Codex、Antigravityに同じトピックで複数ラウンドの議論をさせます。参加者、使うモデル、ラウンド数を自分で選べ、開始前にtoken見積もりが表示されます。',
     resume_label: '続きから',
     resume_h2: 'CLI でも前回の続きから',
     resume_lead: 'ウェブ版もデスクトップアプリも、閉じて開き直せば会話履歴は自動でそのまま出てきます。CLI にも履歴は残っていますが、コマンドを知らないと呼び出せません。Resume はそこを自動化します——新しいセッションを開くだけで前回の続きを自動で引き継ぎ、コマンドを覚える必要も説明し直す必要もありません。さらに毎日ローカルのログをヘルスチェックし、トークンの無駄を見つけると引き継ぎに一行のお知らせを追加。「見せて」と言えば、AI が内容と改善策を説明します。ローカルの記録だけを読み、サーバーには接続しません。',
     resume_point1: '前回の進捗を自動で引き継ぎ',
     resume_point4: '毎日のヘルスチェックでトークンの無駄を通知',
     resume_point2: 'ローカルの記録だけを読む',
-    resume_img_alt: '前回の続きを CLI に引き継ぐ様子',
+    resume_img_alt: 'usage のブランドバナー：墨絵の猫と赤い円相、「Pick up where you left off.」のコピー',
     mascot_alt: 'usage の執事ネコ、あなたの進捗コンシェルジュ',
     install_h2: '10 秒でインストール。',
     install_sub: '4 つの方法、いずれも無料・AGPL-3.0。',
@@ -1179,6 +1151,7 @@ const T = {
     install_btn_releases: '→ Releases ページを開く',
     copy_btn: 'コピー',
     copy_done: 'コピー済み',
+    copy_fail: 'コピー失敗',
     screen_h2: '気分に合うパネルを選んで。',
     screen_sub: '14 種の内蔵テーマ。ポップオーバーのツールバーからいつでも切り替え可能。',
     report_h: 'あなたの AI 使用量を、共有可能な 1 ページに。',
@@ -1215,6 +1188,12 @@ const T = {
     features_sub: '리팩토링 중에 한도에 도달할지 추측하지 마세요.',
     card1_h: '5시간과 7일 한도 한눈에',
     card1_p: 'Claude Code의 세션(5h)과 주간(7d) 퍼센트를 메뉴 바에 동시 표시. 클릭하면 프로젝트별 사용량과 비용을 보여주는 팝오버.',
+    q_session: '세션',
+    q_weekly: '주간',
+    q_used_s: '62% 사용됨',
+    q_used_w: '38% 사용됨',
+    q_reset_s: '2시간 14분 후 초기화',
+    q_reset_w: '3일 6시간 후 초기화',
     card2_h: 'Claude Code, Codex, Antigravity를 한 앱에서',
     card2_p: 'Anthropic, OpenAI, Google 한도를 나란히 추적. Codex는 <code>~/.codex/sessions/</code>에서 설정 없이 자동 감지되고, Antigravity는 자체 CLI가 이미 저장해 둔 로그인 정보를 사용합니다.',
     card14_h: 'Grok CLI도 지원',
@@ -1225,21 +1204,17 @@ const T = {
     card4_p: '오늘, 주간, 월간, 전체 기간 — 토큰/비용 추세, 상위 프로젝트, 모델 분포가 포함된 공유 가능한 HTML 보고서. 프로젝트 이름은 기본 숨김 처리됩니다.',
     card5_h: '14가지 시각 패널 테마',
     card5_p: '매트릭스 디지털 비, Windows 95, 복고 신문, 자정 수족관, 월드컵 FIFA HUD, 나비 설계도 — 메뉴 바 팝아웃의 분위기를 마음대로.',
-    card7_h: 'AI 인재 마켓',
-    card7_p: '1인 법률사무소, 1인 소프트웨어 스튜디오 등 큐레이션된 Claude Code 서브에이전트 페르소나 팀을 <code>~/.claude/agents/</code>에 바로 설치하고, 다음 대화에서 이름만 불러 사용하세요.',
     card8_h: '간결 모드',
-    card8_p: '메뉴 바 스위치 하나로 Claude Code — 설치되어 있다면 Codex CLI까지 — 대화 전체를 더 간결하게 답하도록 요청합니다. 내용은 그대로, 글자 수만 줄고 코드·명령어·오류 메시지는 한 글자도 줄지 않습니다.',
+    card8_p: '메뉴 바 스위치 하나로 Claude Code — 설치되어 있다면 Codex CLI까지 — 대화 전체를 더 간결하고 쉬운 말로 답하도록 요청합니다. 내용은 그대로, 글자 수만 줄고 코드·명령어·오류 메시지는 한 글자도 줄지 않습니다. 가벼운 리마인더가 긴 대화에서도 다시 장황해지는 것을 막아 줍니다.',
     card10_h: '한도에 닿기 전에 알림',
     card10_p: '컨텍스트 창이 70%(빠르게 채워지면 더 일찍)에 도달하면 상태 줄이 <code>/clear</code> 또는 <code>/compact</code> 를 권해 토큰 낭비를 막아 줍니다. 한도 경고와 회복 알림용 시스템 알림도 따로 켤 수 있어요. 상태 줄에는 prompt cache 적중률과 만료 카운트다운도 표시되어, 지금 마무리해도 캐시된 컨텍스트를 재사용할 수 있는지 판단할 수 있습니다.',
-    card13_h: 'AI 원탁 토론',
-    card13_p: 'Claude Code, Codex, Antigravity가 같은 주제로 여러 라운드에 걸쳐 토론하게 합니다. 참여자, 사용할 모델, 라운드 수를 직접 선택할 수 있으며 시작 전에 token 예상치가 표시됩니다.',
     resume_label: '이어서 계속',
     resume_h2: '이제 CLI도 이어서',
     resume_lead: '웹과 데스크톱 앱은 닫았다 열어도 대화 기록이 자동으로 그대로 남아있어요. CLI에도 기록은 남지만, 명령어를 알아야 다시 불러올 수 있어요. Resume은 이걸 자동으로 해줘요 — 새 세션을 열면 명령어를 몰라도, 다시 설명할 필요도 없이 지난 작업을 자동으로 이어받아요. 이제 매일 로컬 로그를 헬스 체크해서 토큰 낭비를 발견하면 인계 메시지에 한 줄 알림을 붙여요. "보여줘"라고 하면 AI가 내용과 개선 방법을 설명해 줘요. 로컬 기록만 읽고 서버에 연결하지 않아요.',
     resume_point1: '지난 작업을 자동으로 이어받기',
     resume_point4: '매일 헬스 체크로 토큰 낭비 알림',
     resume_point2: '로컬 기록만 읽음',
-    resume_img_alt: '지난 작업을 CLI로 이어주는 모습',
+    resume_img_alt: 'usage 브랜드 배너: 수묵화 고양이와 붉은 원상, "Pick up where you left off." 문구',
     mascot_alt: 'usage 집사 고양이, 당신의 진행 관리자',
     install_h2: '10초 안에 설치 완료.',
     install_sub: '네 가지 방법 모두 무료, AGPL-3.0.',
@@ -1258,6 +1233,7 @@ const T = {
     install_btn_releases: '→ Releases 페이지 열기',
     copy_btn: '복사',
     copy_done: '복사됨',
+    copy_fail: '복사 실패',
     screen_h2: '마음에 드는 패널을 골라보세요.',
     screen_sub: '14가지 내장 테마. 팝오버 툴바에서 언제든 전환 가능.',
     report_h: '당신의 AI 사용량을, 공유 가능한 한 페이지로.',
@@ -1334,6 +1310,13 @@ function applyLang(lang) {
   document.querySelectorAll('[data-shot]').forEach(img => {
     const src = useEn ? img.dataset.imgEn : img.dataset.imgCjk;
     if (src && img.getAttribute('src') !== src) img.setAttribute('src', src);
+    // The CJK shot is a different pixel width, so the reserved box has to follow it.
+    const size = useEn ? img.dataset.sizeEn : img.dataset.sizeCjk;
+    if (size) {
+      const wh = size.split('x');
+      img.setAttribute('width', wh[0]);
+      img.setAttribute('height', wh[1]);
+    }
   });
 
   if (typeof window.usagePanelsSetLanguage === 'function') window.usagePanelsSetLanguage(lang);
@@ -1352,10 +1335,10 @@ function applyLang(lang) {
 const btn = document.getElementById('lang-btn');
 const menu = document.getElementById('lang-menu');
 const langOptions = [...menu.querySelectorAll('[role="option"]')];
-function closeMenu() {
+function closeMenu(restoreFocus) {
   menu.hidden = true;
   btn.setAttribute('aria-expanded', 'false');
-  btn.focus();
+  if (restoreFocus !== false) btn.focus();
 }
 function openMenu() { menu.hidden = false; btn.setAttribute('aria-expanded', 'true'); }
 function openMenuAndFocus(index) {
@@ -1389,7 +1372,7 @@ menu.addEventListener('keydown', event => {
   }
 });
 document.addEventListener('click', e => {
-  if (!menu.hidden && !e.target.closest('.lang')) closeMenu();
+  if (!menu.hidden && !e.target.closest('.lang')) closeMenu(false);
 });
 document.addEventListener('keydown', e => {
   if (e.key === 'Escape' && !menu.hidden) closeMenu();
@@ -1441,14 +1424,43 @@ if (!prefersReducedMotion && 'IntersectionObserver' in window) {
   let language = 'en';
 
   // 面板自己量出的自然高度，透過 make_panel_demo.py 補的假 webkit 橋接傳過來。
+  const box = stage.parentElement;
+  const topbar = document.querySelector('.topbar');
+  let naturalHeight = 0;
+
+  // 面板本身比視窗高（實測 1132–1183px），全高顯示就得捲動才看得完。
+  // 桌機縮到剛好塞進「視窗減頂欄減按鈕列」，換面板不用捲；窄螢幕維持原尺寸。
+  function fit() {
+    if (!naturalHeight) return;
+    if (window.innerWidth <= 760) {
+      stage.style.transform = '';
+      box.style.width = '';
+      box.style.height = '';
+      return;
+    }
+    const available = window.innerHeight - (topbar ? topbar.offsetHeight : 0) - 48;
+    const scale = Math.max(0.5, Math.min(1, available / naturalHeight));
+    stage.style.transform = 'scale(' + scale + ')';
+    box.style.width = Math.round(364 * scale) + 'px';
+    box.style.height = Math.round(naturalHeight * scale) + 'px';
+  }
+
+  function setNaturalHeight(height) {
+    naturalHeight = height;
+    stage.style.height = height + 'px';
+    fit();
+  }
+
+  window.addEventListener('resize', fit);
+
   window.addEventListener('message', function (event) {
     const height = event.data && event.data.usagePanelHeight;
-    if (height) stage.style.height = height + 'px';
+    if (height) setNaturalHeight(height);
   });
 
   function show(id) {
     const panel = panels.find(p => p.id === id);
-    if (panel) stage.style.height = panel.height + 'px';
+    if (panel) setNaturalHeight(panel.height);
     stage.src = 'panels/' + id + '.html';
     stage.addEventListener('load', function once() {
       stage.removeEventListener('load', once);
@@ -1488,16 +1500,16 @@ document.querySelectorAll('.copy-btn').forEach(function (button) {
   button.addEventListener('click', async function () {
     const code = button.closest('.copy-wrap').querySelector('code');
     if (!code) return;
+    const lang = document.documentElement.lang;
+    const t = T[lang] || T.en;
     try {
       await navigator.clipboard.writeText(code.textContent);
+      button.textContent = t.copy_done || T.en.copy_done;
     } catch (e) {
-      return;
+      button.textContent = t.copy_fail || T.en.copy_fail;
     }
-    const lang = document.documentElement.lang;
-    const done = (T[lang] && T[lang].copy_done) || T.en.copy_done;
-    button.textContent = done;
-    setTimeout(function () {
-      const t = T[lang] || T.en;
+    clearTimeout(button._resetTimer);
+    button._resetTimer = setTimeout(function () {
       button.textContent = t.copy_btn;
     }, 2000);
   });

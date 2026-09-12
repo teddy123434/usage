@@ -20,7 +20,7 @@ Running out of quota mid-session is expensive — especially during a long refac
 [![OpenSSF Best Practices](https://www.bestpractices.dev/projects/13538/badge)](https://www.bestpractices.dev/projects/13538)
 
 <p align="center">
-  <img src="docs/showcase.en.png" alt="usage — Claude Code, Codex, and Antigravity quota pinned to the macOS menu bar" width="820">
+  <img src="docs/showcase-v3.en.png" alt="usage — Claude Code, Codex, and Antigravity quota pinned to the macOS menu bar" width="820">
 </p>
 
 Claude Code and Codex numbers are read passively from log files already on your machine, so **watching your quota never calls Anthropic or OpenAI's LLM APIs** and never costs you a token. Antigravity is the one exception: its quota comes from Google's official quota endpoint using the sign-in the Antigravity CLI already stores locally — a metadata call that doesn't consume your model quota either.
@@ -58,8 +58,6 @@ It lands in your Applications folder automatically. Right-click **Open** once to
 
 ### AI Teamwork
 
-- **AI Talent Market:** Bring a ready-made AI team into Claude Code. Browse and install curated subagent personas into `~/.claude/agents/` instantly. Runs fully locally via the bundled CLI.
-- **AI Council:** Open a dedicated window and run a multi-round discussion between Claude Code, Codex, and Antigravity — pick participants, models, and a debate style, with a token estimate up front. Steer it between rounds, see who dissents in the consensus tally, and let it stop early once everyone agrees. Seats can wear AI Talent Market personas and reference real files via an optional read-only folder.
 - **AI Update Daily:** Opens a daily-updated public [page](https://aqua5230.github.io/ai-updates/) covering Claude Code, Codex, and Antigravity, with the full history kept. Reviewed items get a plain-language summary in all five UI languages; unreviewed ones show the original source text.
 
 ### Reporting & Insight
@@ -130,7 +128,7 @@ Windows has the full core experience: the system-tray UI, Claude Code status-lin
 
 The system-tray icon updates with your Claude quota percentage; its tooltip summarizes the Claude and Codex windows. Left-click opens the same 14 quota themes available on macOS (Default plus the other thirteen) in WebView2. Right-click provides Reset Panel Position and Quit; panel switching, refresh, launch at login, and update checks are in the panel menu.
 
-Windows differences: the panel opens at the bottom-right of the working area rather than next to the tray icon; update prompts use a system Yes/No dialog; and the AI Talent Market and AI Council panels are macOS-only.
+Windows differences: the panel opens at the bottom-right of the working area rather than next to the tray icon; update prompts use a system Yes/No dialog.
 
 ### Code signing policy
 
@@ -189,8 +187,6 @@ If the menu bar shows `--`, it's usually not broken — there's just no local da
 | Grok CLI usage | ✅ | — | — |
 | Claude Code & Codex service-status alerts | ✅ | — | — |
 | HTML deep reports & UI | ✅ | ✅ | — |
-| AI Talent Market | macOS only | — | — |
-| AI Council | macOS only | — | — |
 | AI Update Daily | ✅ | — | — |
 | Progress Concierge & Token Saver | ✅ | — | — |
 | Token-waste Health Check | ✅ | — | — |
