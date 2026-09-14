@@ -772,6 +772,23 @@ def project_ocx_quota(
             if weekly is not None
             else ()
         )
+    elif snapshot.provider == "antigravity":
+        # OCX reports one Gemini and one Claude window pair ("Gem"/"Gem (Weekly)" and
+        # "Cla"/"Cla (Weekly)"), not the generic "five_hour"/"weekly" labels the other
+        # providers use. Mirror the native path's group preference (agy.py's
+        # `project_quota` prefers the Gemini group, falling back to whichever group is
+        # present) so switching Native/OCX for the same account doesn't jump groups.
+        group = "Gem" if "Gem" in by_label else "Cla" if "Cla" in by_label else None
+        session = by_label.get(group) if group else None
+        second = by_label.get(f"{group} (Weekly)") if group else None
+        ordered = (
+            _project_window_or_missing(
+                session, _t(language, "session_label"), current_time, color, language
+            ),
+            _project_window_or_missing(
+                second, _t(language, "weekly_label"), current_time, color, language
+            ),
+        )
     else:
         session = by_label.get("five_hour")
         second = by_label.get("weekly") or by_label.get("monthly")

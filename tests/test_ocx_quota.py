@@ -72,11 +72,10 @@ def test_parse_fixture_preserves_zero_resets_and_custom_windows() -> None:
 
     antigravity = result.providers["antigravity"]
     assert [(window.label, window.percent) for window in antigravity.windows] == [
-        ("five_hour", 0.0),
-        ("weekly", 0.0),
-        ("Gemini 3.1 Pro", 0.0),
+        ("Gem", 0.0),
+        ("Gem (Weekly)", 0.0),
     ]
-    assert antigravity.windows[-1].reset_at == datetime(2026, 9, 5, 16, 40, tzinfo=UTC)
+    assert antigravity.windows[-1].reset_at == datetime(2026, 9, 12, 16, 40, tzinfo=UTC)
 
 
 def test_parse_fixture_normalizes_openrouter_account_and_key_credits() -> None:

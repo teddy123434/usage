@@ -71,15 +71,17 @@
     {
       "provider": "google-antigravity",
       "label": "Google Antigravity",
-      "source": "antigravity:usage",
+      "source": "google-antigravity:fetchAvailableModels",
       "quota": {
-        "fiveHourPercent": 0,
-        "weeklyPercent": 0,
         "customWindows": [
           {
-            "label": "Gemini 3.1 Pro",
+            "label": "Gem",
+            "percent": 0
+          },
+          {
+            "label": "Gem (Weekly)",
             "percent": 0,
-            "resetAt": 1788626400000
+            "resetAt": 1789231200000
           }
         ],
         "updatedAt": 1788540000000
