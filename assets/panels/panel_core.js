@@ -427,6 +427,40 @@
       el.hidden = true;
     }
 
+    // Every theme positions a stale/error tooltip with `right: 0` on its info icon so it
+    // grows leftward from a fixed 14px glyph. That is fine near the right edge of the panel
+    // but overflows past the window's left edge once the icon sits closer to the left (e.g.
+    // the Codex row's "N ago" text pushes its icon left of where Claude's sits). Clamp it back
+    // into the viewport on hover instead of re-tuning each theme's static CSS offset.
+    function clampStaleTooltip(tooltipEl) {
+      if (!tooltipEl) return;
+      const margin = 8;
+      // Re-measure from the CSS default (right: 0) each time — a stale inline offset from a
+      // previous hover, or a window resize since then, would otherwise throw this off.
+      tooltipEl.style.right = "";
+      const rect = tooltipEl.getBoundingClientRect();
+      if (rect.width === 0) return;
+      const viewportWidth = document.documentElement.clientWidth || window.innerWidth;
+      const overflowLeft = margin - rect.left;
+      if (overflowLeft <= 0) return;
+      const maxShift = Math.max(0, viewportWidth - margin - rect.right);
+      const shift = Math.min(overflowLeft, maxShift);
+      if (shift > 0) tooltipEl.style.right = `${-shift}px`;
+    }
+
+    function bindStaleTooltipClamps() {
+      const tooltips = document.querySelectorAll(
+        "[data-codex-stale-tooltip], [data-agy-stale-tooltip], [data-grok-stale-tooltip], [data-history-error-tooltip]"
+      );
+      tooltips.forEach((tooltipEl) => {
+        const infoEl = tooltipEl.parentElement;
+        if (!infoEl) return;
+        infoEl.addEventListener("mouseenter", () => clampStaleTooltip(tooltipEl));
+      });
+    }
+
+    bindStaleTooltipClamps();
+
     function renderProjects(projects) {
       const list = document.querySelector('[data-project-list]');
       if (!list) return;
