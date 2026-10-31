@@ -19,6 +19,7 @@ PROJECT_IMPORT_ROOTS = {
     "usage_common",
 }
 HOOK_SCRIPTS = (
+    "usage_acp_tap.py",
     "usage_session_resume.py",
     "usage_statusline_forwarder.py",
     "usage_statusline.py",
