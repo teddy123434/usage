@@ -81,6 +81,31 @@ Codex를 사용한 적이 있다면 `usage`가 기록을 자동으로 가져옵�
   <img src="statusline.ko.gif" alt="Claude Code 상태 줄 표시(한국어)" width="900">
 </p>
 
+### Zed에서 Claude 사용하기 (ACP 에이전트)
+
+Zed의 Claude Agent는 터미널 화면 없이 Claude Code를 실행하므로 상태 줄이 한 번도 실행되지 않고, Claude 할당량도 더 이상 갱신되지 않습니다. Claude 자체 출력에는 여전히 할당량이 담겨 있어서, 작은 래퍼 스크립트로 이를 `~/.claude/usage-status.json`에 복사할 수 있습니다. 추가 네트워크 요청은 없습니다. 현재는 수동 설정이며 macOS만 지원합니다. 이 저장소의 클론에서 실행합니다:
+
+```bash
+cp usage_hooks/usage_acp_tap.py ~/.claude/usage-acp-tap.py
+cp usage_hooks/usage_claude_tap.sh ~/.claude/usage-claude-tap.sh
+chmod +x ~/.claude/usage-acp-tap.py ~/.claude/usage-claude-tap.sh
+```
+
+그다음 Zed `settings.json`의 `claude-acp` 항목에 `env`를 추가하고, Zed를 완전히 종료(Cmd+Q)한 뒤 다시 엽니다:
+
+```json
+"agent_servers": {
+  "claude-acp": {
+    "type": "registry",
+    "env": { "CLAUDE_CODE_EXECUTABLE": "/Users/<you>/.claude/usage-claude-tap.sh" }
+  }
+}
+```
+
+- 할당량은 Claude 스레드를 시작할 때마다 한 번 갱신됩니다. 계속 갱신되지는 않습니다.
+- `env`에는 절대 경로가 필요합니다. `~`는 확장되지 않습니다.
+- Zed가 내장 `claude`의 위치를 옮기면 Claude Agent가 시작에 실패하고, 오류 메시지에 찾지 못한 경로가 표시됩니다. `env`를 지우면 원래대로 돌아갑니다.
+
 ## 제공 기능
 
 ### 화면 표시

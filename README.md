@@ -81,6 +81,31 @@ Once set up, the bottom of the Claude Code window will show a status line like t
   <img src="docs/statusline.en.gif" alt="Claude Code statusLine display (English)" width="900">
 </p>
 
+### Claude in Zed (ACP agents)
+
+Zed's Claude Agent runs Claude Code without a terminal, so the status line never runs and the Claude quota stops updating. Claude still reports its quota in its own output, and a small wrapper can copy it into `~/.claude/usage-status.json` with no extra network requests. For now this is a manual, macOS-only setup. From a clone of this repo:
+
+```bash
+cp usage_hooks/usage_acp_tap.py ~/.claude/usage-acp-tap.py
+cp usage_hooks/usage_claude_tap.sh ~/.claude/usage-claude-tap.sh
+chmod +x ~/.claude/usage-acp-tap.py ~/.claude/usage-claude-tap.sh
+```
+
+Then add `env` to the `claude-acp` entry in Zed's `settings.json`, and fully quit and reopen Zed (Cmd+Q):
+
+```json
+"agent_servers": {
+  "claude-acp": {
+    "type": "registry",
+    "env": { "CLAUDE_CODE_EXECUTABLE": "/Users/<you>/.claude/usage-claude-tap.sh" }
+  }
+}
+```
+
+- The quota updates once each time a Claude thread starts, not continuously.
+- `env` needs an absolute path; `~` is not expanded.
+- If Zed moves its bundled `claude`, the Claude agent fails to start with a message naming the missing path. Remove the `env` key to undo.
+
 ## What You Get
 
 ### On Screen

@@ -81,6 +81,31 @@ Codexを使用したことがある場合、`usage` はその履歴を自動で�
   <img src="statusline.ja.gif" alt="Claude Codeのステータスライン表示（日本語）" width="900">
 </p>
 
+### Zed で Claude を使う（ACP エージェント）
+
+Zed の Claude Agent はターミナル画面なしで Claude Code を動かすため、ステータスラインが一度も実行されず、Claude のクォータが更新されなくなります。Claude 自身の出力にはクォータが含まれているので、小さなラッパースクリプトでそれを `~/.claude/usage-status.json` にコピーできます。追加のネットワーク通信は発生しません。現時点では手動設定で、macOS のみ対応です。このリポジトリのクローンで実行します：
+
+```bash
+cp usage_hooks/usage_acp_tap.py ~/.claude/usage-acp-tap.py
+cp usage_hooks/usage_claude_tap.sh ~/.claude/usage-claude-tap.sh
+chmod +x ~/.claude/usage-acp-tap.py ~/.claude/usage-claude-tap.sh
+```
+
+次に Zed の `settings.json` の `claude-acp` に `env` を追加し、Zed を完全に終了（Cmd+Q）してから開き直します：
+
+```json
+"agent_servers": {
+  "claude-acp": {
+    "type": "registry",
+    "env": { "CLAUDE_CODE_EXECUTABLE": "/Users/<you>/.claude/usage-claude-tap.sh" }
+  }
+}
+```
+
+- クォータは Claude のスレッドを開始するたびに 1 回更新されます。常時更新ではありません。
+- `env` には絶対パスが必要です。`~` は展開されません。
+- Zed が同梱の `claude` の場所を変えると、Claude Agent が起動に失敗し、見つからないパスがエラーに表示されます。`env` を削除すれば元に戻ります。
+
 ## 主な機能
 
 ### 画面表示

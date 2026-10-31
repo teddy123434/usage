@@ -81,6 +81,31 @@ uvx usage-cli
   <img src="statusline.gif" alt="Claude Code statusLine 顯示樣式（繁中）" width="900">
 </p>
 
+### 在 Zed 裡用 Claude（ACP agent）
+
+Zed 的 Claude Agent 在沒有終端畫面的情況下跑 Claude Code，所以狀態列永遠不會執行，Claude 的額度也就停止更新。Claude 自己的輸出裡仍然會回報額度，用一支小包裝 script 就能把它複製到 `~/.claude/usage-status.json`，不會多發任何網路請求。目前要手動設定，而且只支援 macOS。在這個 repo 的 clone 裡執行：
+
+```bash
+cp usage_hooks/usage_acp_tap.py ~/.claude/usage-acp-tap.py
+cp usage_hooks/usage_claude_tap.sh ~/.claude/usage-claude-tap.sh
+chmod +x ~/.claude/usage-acp-tap.py ~/.claude/usage-claude-tap.sh
+```
+
+接著在 Zed `settings.json` 的 `claude-acp` 項目加上 `env`，然後完全關掉 Zed（Cmd+Q）再打開：
+
+```json
+"agent_servers": {
+  "claude-acp": {
+    "type": "registry",
+    "env": { "CLAUDE_CODE_EXECUTABLE": "/Users/<you>/.claude/usage-claude-tap.sh" }
+  }
+}
+```
+
+- 額度在每次開始一個 Claude 對話時更新一次，不是持續更新。
+- `env` 要用絕對路徑，`~` 不會被展開。
+- 如果 Zed 之後搬動了內建的 `claude`，Claude Agent 會啟動失敗，錯誤訊息會寫出找不到的路徑。刪掉 `env` 就能還原。
+
 ## 你會得到什麼
 
 ### 畫面上
